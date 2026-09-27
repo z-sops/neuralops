@@ -54,3 +54,5 @@ server.log
 /skills/
 # neuralops journal (local runtime data)
 mini-services/neuralops-mcp/data/
+.zscripts/*.pid
+!.env.example

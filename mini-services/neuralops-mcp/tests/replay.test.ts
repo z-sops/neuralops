@@ -100,13 +100,20 @@ describe('persistence', () => {
     expect(store.decisionsForTask('task_42').some((d) => d.text === 'kept')).toBe(true)
   })
 
-  test('a diverging journal refuses to boot instead of silently wiping history', () => {
+  test('a diverging journal refuses to replay instead of silently wiping history', () => {
+    freshDemo()
+    const journal = structuredClone([...store.journal])
+    const bogus = { k: 'act' as const, act: { id: 'act_x', type: 'claim' as const, from: 'agent.qa', payload: { taskId: 'task_42' }, references: [], timestamp: '2026-01-01T00:00:00.000Z', seq: 1, via: 'token' as const } }
+    expect(() => replay([...journal, bogus])).toThrow(/diverged/)
+  })
+
+  test('an unsigned line appended to a signed journal refuses to boot', () => {
     const b = bootstrapState(cfg())
     b.journal!.detach()
     const bogus = { k: 'act', act: { id: 'act_x', type: 'claim', from: 'agent.qa', payload: { taskId: 'task_42' }, references: [], timestamp: '2026-01-01T00:00:00.000Z', seq: 1, via: 'token' } }
     appendFileSync(join(dir, 'journal.jsonl'), JSON.stringify(bogus) + '\n')
     store.reset()
-    expect(() => bootstrapState(cfg())).toThrow(/diverged/)
+    expect(() => bootstrapState(cfg())).toThrow(/integrity check failed/)
   })
 
   test('seeding a new demo truncates the journal to a fresh genesis', () => {

@@ -219,3 +219,22 @@ Verification:
 Stage Summary:
 - Run: `cd mini-services/neuralops-mcp && bun install && bun run dev` (demo) — see its README for secure mode and MCP setup.
 - Not yet: external enforcement (CI / hooks), multi-workspace, DB-backed journal, rate limiting.
+
+---
+Task ID: 10 (V0.1.2 security)
+Agent: Claude
+Task: Fill the 9 gaps found after V0.1.1.
+
+Work Log:
+- Gateway: Caddyfile forwards only XTransformPort=3031 (others 403), binds 127.0.0.1. Verified on real Caddy 2.10.2: old config leaked a local "secret" service and was reachable from the network IP; new config returns 403 and is loopback-only.
+- Core binds 127.0.0.1 by default; demo mode refuses non-loopback hosts; `bun run dev:local` for the dashboard.
+- Journal: HMAC-chained lines + signed head (edit/insert/delete/reorder/truncate/strip detected, boot refused), backups on boot + reseed, one-time migration of unsigned V0.1.1 journals.
+- Tokens: expiry, revoke, rotate (admin or self); admin token cannot act as an agent in secure mode unless NEURALOPS_ADMIN_CAN_ACT=1.
+- Admin API: policies create/delete, authority set; every admin change audited in the ledger and replayable (a replay test caught a policy-id counter drift — fixed).
+- Verified evidence: `attest` authority (new seed agent.ci); gates can requireVerified evidence types; authority/approval cannot skip them.
+- Prompt-injection guard on all agent-authored text shown to other agents (flatten, strip invisible/control chars, cap, flag instruction-like text, DATA notice).
+- Enforcement outside the model: /api/gate/status + neuralops_gate_status tool; gate-check and report-evidence CLIs; Claude Code PreToolUse hook; GitHub workflow template. Task ids no longer allow hyphens so branches like task_42-desc resolve (found by enforcement tests).
+- Rate limiting (token bucket, 429 + Retry-After); security headers.
+- Untracked .env and .zscripts/dev.pid; added .env.example and a root README for the public repo.
+
+Verification: 101 tests (7 files) pass; backend + frontend tsc clean.

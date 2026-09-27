@@ -19,6 +19,7 @@ import {
   formatCompactedContext,
 } from '../engines/context.js'
 import { registerAgent, RegisterSchema } from '../engines/agents.js'
+import { gateStatus } from '../engines/gate.js'
 import { store } from '../state/store.js'
 import { ACT_DESCRIPTION, ACT_FAMILY, ACT_TYPES, FAMILY_DESCRIPTION, isActType } from '../protocol/act-types.js'
 import { PAYLOAD_SCHEMAS } from '../protocol/payloads.js'
@@ -84,6 +85,11 @@ const QUERY_SCHEMAS = {
   neuralops_get_evidence: z.object({ evidenceId: z.string() }),
   neuralops_get_decision: z.object({ decisionId: z.string() }),
   neuralops_get_original_context: z.object({ actId: z.string() }),
+  neuralops_gate_status: z.object({
+    taskId: z.string(),
+    action: z.string().optional().describe('default "complete"; e.g. "deploy"'),
+    scope: z.string().optional().describe('default "production"'),
+  }),
 } as const
 
 type QueryTool = keyof typeof QUERY_SCHEMAS
@@ -102,6 +108,8 @@ const QUERY_DESCRIPTIONS: Record<QueryTool, string> = {
   neuralops_get_evidence: 'Fetch one evidence record by id.',
   neuralops_get_decision: 'Fetch one decision record by id.',
   neuralops_get_original_context: 'Fetch the original act envelope by act id.',
+  neuralops_gate_status:
+    'Ask whether an action (merge = "complete", or e.g. "deploy") is cleared for a task and scope. CI and hooks enforce exactly this answer, so check it before pushing or deploying.',
 }
 
 export const TOOL_DEFS: ToolDef[] = [
@@ -149,6 +157,9 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         return { ok: true, result: { agent, via: caller.via } }
       }
       case 'neuralops_register': {
+        if (!caller.isAdmin && caller.via !== 'impersonated') {
+          throw forbidden('Registering agents needs the admin token')
+        }
         const { agent, token } = registerAgent(args, { asAdmin: caller.isAdmin })
         return { ok: true, result: { agent, token, note: 'Store this token now — it is not shown again.' } }
       }
@@ -176,6 +187,10 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         return { ok: true, result: getDecisionById(parseArgs(name, args).decisionId) }
       case 'neuralops_get_original_context':
         return { ok: true, result: getOriginalContext(parseArgs(name, args).actId) }
+      case 'neuralops_gate_status': {
+        const a = parseArgs(name, args)
+        return { ok: true, result: gateStatus(a.taskId, a.action ?? 'complete', a.scope ?? 'production') }
+      }
     }
 
     if (name.startsWith(ACT_TOOL_PREFIX)) {

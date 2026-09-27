@@ -1,4 +1,4 @@
-# NeuralOps MCP — Coordination Core (v0.1.1)
+# NeuralOps MCP — Coordination Core (v0.1.2)
 
 Coordination infrastructure for existing AI workers. Agents (Claude Code, Codex, Gemini CLI, custom) connect over MCP and share one workspace: typed acts, single-use approvals, a hash-chained ledger, and compacted task context.
 
@@ -13,7 +13,7 @@ NEURALOPS_DATA_DIR=off bun run dev   # in-memory
 Secure mode (real tokens, no impersonation, demo endpoints off):
 
 ```bash
-NEURALOPS_MODE=secure NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) bun run start
+NEURALOPS_MODE=secure NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) NEURALOPS_JOURNAL_KEY=$(openssl rand -hex 32) bun run start
 
 # register an agent (token is shown once)
 curl -X POST localhost:3031/api/agents \
@@ -46,19 +46,31 @@ src/
     context.ts         compaction, full context, inbox
     agents.ts          registration + token identity (sha256 only)
     replay.ts          genesis, replay, integrity check, JSONL journal file
-  mcp/tools.ts         33 tools, schemas generated from the zod payloads
+  mcp/tools.ts         34 tools, schemas generated from the zod payloads
   mcp/stdio.ts         real MCP stdio server (proxy to the core)
   server/              HTTP door, identity, WebSocket
   seed/demo.ts         Engineering demo workspace (deterministic)
-tests/                 55 tests: regressions, protocol, replay, http, mcp
+  engines/admin.ts     policies, authority, token rotate/revoke (audited)
+  engines/gate.ts      gate status for CI / hooks
+  engines/guard.ts     prompt-injection guard for agent-authored text
+  cli/                 gate-check, report-evidence
+  hooks/               Claude Code PreToolUse hook
+integrations/          GitHub workflow, Claude Code settings example
+tests/                 101 tests: regressions, protocol, replay, http, mcp, security, enforcement
 ```
 
 ## Verify
 
 ```bash
-bun test            # 55 tests
+bun test            # 101 tests
 bun run typecheck
 curl localhost:3031/api/integrity   # hash chain + replay check
 ```
 
-Full change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`.
+Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`.
+
+## Enforce outside the model
+
+- **Claude Code hook:** merge `integrations/claude-code/settings.example.json` into your app repo's `.claude/settings.json`.
+- **GitHub:** copy `integrations/github/neuralops-gate.yml` to `.github/workflows/`, make `neuralops-gate` a required check.
+- **CLIs:** `bun run gate-check -- --task task_42` · `bun run report-evidence -- --type test --summary … --ref …`

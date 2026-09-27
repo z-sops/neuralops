@@ -5,7 +5,7 @@
 ✅ Coordination Core (typed acts, state mutation, immutable ledger)
 ✅ Authority + approval engine
 ✅ Context compaction engine (~70–81% on demo, chars/4 estimate)
-✅ MCP tool registry (33 tools in V0.1.1)
+✅ MCP tool registry (33 tools in V0.1.1, 34 in V0.1.2)
 ✅ HTTP REST API + WebSocket
 ✅ Demo seed (Engineering workspace)
 ✅ Protocol Inspector dashboard
@@ -20,6 +20,15 @@
 ✅ Hash-chained ledger + `/api/integrity`
 ✅ Conversation TTL
 ✅ 55 automated tests; tsc + lint clean
+
+## V0.1.2 — Security (DONE)
+
+✅ Gateway locked to the core; loopback-only by default
+✅ Enforcement outside the model: Claude Code hook, GitHub required check, CI-verified evidence
+✅ HMAC-signed journal + signed head, backups
+✅ Token expiry / revoke / rotate; admin API for policies + authority (audited, replayable)
+✅ Prompt-injection guard; rate limiting
+✅ 101 automated tests
 
 ## V0.2 — Real Agent Integration (next)
 

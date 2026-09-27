@@ -7,6 +7,7 @@ export type ErrorCode =
   | 'not_found' // 404
   | 'conflict' // 409 — state does not allow this act right now
   | 'too_large' // 413
+  | 'rate_limited' // 429
 
 export const HTTP_STATUS: Record<ErrorCode, number> = {
   invalid: 400,
@@ -15,6 +16,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   not_found: 404,
   conflict: 409,
   too_large: 413,
+  rate_limited: 429,
 }
 
 export class NeuralOpsError extends Error {

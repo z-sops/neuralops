@@ -1,7 +1,7 @@
 # NeuralOps MCP — Mukammal Product Summary
 
 > **AI Workforce Coordination Protocol**
-> V0.1.1 — Hardened build. Kya badla: `17-V0.1.1-Hardening.md`
+> V0.1.2 — Security build. Kya badla: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`
 
 ---
 
@@ -431,9 +431,9 @@ NeuralOps ke saath — compacted context:
 
 # BHAAG 7: MCP TOOL REGISTRY
 
-## 7.1 33 tools
+## 7.1 34 tools
 
-- **10 query tools:** `neuralops_inbox` (pehle yahi), `get_task_context`, `get_full_context`, `get_evidence`, `get_decision`, `get_original_context`, `whoami`, `workspace`, `tasks`, `register`
+- **11 query tools:** `neuralops_inbox` (pehle yahi), `gate_status`, `get_task_context`, `get_full_context`, `get_evidence`, `get_decision`, `get_original_context`, `whoami`, `workspace`, `tasks`, `register`
 - **23 act tools:** `neuralops_<act>` har act type ke liye; optional `references[]` aur `actId` (idempotency)
 - Act tool schemas usi zod schema se generate hote hain jis se dispatcher validate karta hai, is liye drift nahi hota
 
@@ -607,13 +607,14 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 - ✅ Bearer-token identity + secure mode
 - ✅ Persistence: JSONL journal + replay on restart
 - ✅ Hash-chained ledger + `/api/integrity`
-- ✅ Real MCP stdio transport, 33 tools
+- ✅ Real MCP stdio transport, 34 tools
+- ✅ V0.1.2: gateway locked, loopback default, signed journal, token lifecycle, admin API, verified CI evidence, injection guard, rate limit
 - ✅ Context compaction (estimate, labelled)
 - ✅ Dashboard: browser-tested golden path
 
 ## 12.2 What's NOT YET
 
-- ❌ External enforcement (GitHub required check / Claude Code hooks); gate abhi NeuralOps ke andar hai
+- ✅ External enforcement (V0.1.2): Claude Code hook + GitHub required check + verified CI evidence
 - ❌ Multi-workspace / multi-tenant
 - ❌ Real tokenizers (chars/4 now)
 - ❌ DB-backed journal for multiple instances
@@ -665,7 +666,7 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 |-------|--------|
 | Backend + frontend `tsc` | ✅ 0 errors (V0.1: 26) |
 | `eslint .` | ✅ 0 errors (V0.1: 7, although docs said 0) |
-| `bun test` | ✅ 55 pass / 0 fail |
+| `bun test` | ✅ 101 pass / 0 fail |
 | `next build` | ✅ 0 warnings |
 | Browser golden path | ✅ 10/10 |
 | MCP stdio, 2 agents | ✅ |
@@ -760,7 +761,7 @@ src/
 
 # FINAL ONE-LINER
 
-> **NeuralOps MCP V0.1.1 = a working coordination protocol for AI workers: 23 typed acts, a hash-chained ledger backed by a replayable journal, an authority engine with single-use approvals that agents cannot self-grant, a real MCP stdio server with 33 tools, and context compaction (~70–81% on the demo, estimated), covered by 55 automated tests and a browser-tested golden path.**
+> **NeuralOps MCP V0.1.2 = a working coordination protocol for AI workers, enforced outside the model (Claude Code hook + GitHub required check): 23 typed acts, a hash-chained ledger backed by a replayable journal, an authority engine with single-use approvals that agents cannot self-grant, a real MCP stdio server with 33 tools, and context compaction (~70–81% on the demo, estimated), covered by 101 automated tests and a browser-tested golden path.**
 
 ---
 

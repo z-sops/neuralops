@@ -20,13 +20,18 @@ const target = z
 export const GateSchema = z.object({
   action: text(64).describe('Gated action, e.g. "complete"'),
   scope: text(64).describe('Scope the gate applies to, e.g. "production"'),
+  requireVerified: z
+    .array(text(64))
+    .max(10)
+    .optional()
+    .describe('Evidence types (e.g. ["test"]) that must be VERIFIED on the task — recorded by an agent with attest authority such as CI — before this gate can be passed, even with authority or approval'),
 })
 
 // ---- task family ----
 export const CreateTaskPayload = z.object({
   id: z
     .string()
-    .regex(/^task_[a-z0-9_-]{1,48}$/i, 'task ids look like task_<name>')
+    .regex(/^task_[a-z0-9_]{1,48}$/i, 'task ids look like task_<letters/digits/underscores> (no hyphens, so branches can be named task_42-description)')
     .optional()
     .describe('Optional explicit id; generated when omitted'),
   title: text(200),

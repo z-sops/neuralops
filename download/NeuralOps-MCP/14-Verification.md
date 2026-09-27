@@ -1,4 +1,4 @@
-# NeuralOps MCP — Verification Status (V0.1.1)
+# NeuralOps MCP — Verification Status (V0.1.2)
 
 > V0.1 ki verification mein "Lint 0 errors" aur "all golden path steps work" likha tha, lekin `tsc` ke 26 errors, lint ke 7 errors, aur 2 act types crash karte thay. V0.1.1 mein har claim neeche wale command se dobara check ho sakta hai.
 
@@ -7,7 +7,7 @@
 | Check | Command | Result |
 |-------|---------|--------|
 | Backend types | `cd mini-services/neuralops-mcp && bun run typecheck` | ✅ 0 errors |
-| Backend tests | `bun test` | ✅ 55 pass, 0 fail (3 consecutive runs) |
+| Backend tests | `bun test` | ✅ 101 pass, 0 fail |
 | Frontend types | `bunx tsc --noEmit` (root) | ✅ 0 errors |
 | Lint | `bun run lint` (root, whole project) | ✅ 0 errors |
 | Build | `bunx next build` | ✅ compiled, 0 warnings |
@@ -18,9 +18,11 @@
 |------|-------|--------|
 | `regressions.test.ts` | 14 | Har V0.1 review bug (#1–#12) + wildcard + ledger contiguity |
 | `protocol.test.ts` | 21 | Golden path, all 23 act types, authority, ownership, conversations/TTL, validation, atomicity, idempotency, context, inbox |
-| `replay.test.ts` | 7 | Replay = same state hash, tamper detection, restart persistence, torn line, divergence refusal, reseed truncation |
+| `replay.test.ts` | 8 | Replay = same state hash, tamper detection, restart persistence, torn line, divergence refusal, reseed truncation |
 | `http.test.ts` | 10 | Demo impersonation, token identity/spoofing, status codes, 413, tools, integrity, WebSocket, secure mode, admin-only register, WS auth |
-| `mcp.test.ts` | 3 | Real MCP stdio: 33 tools listed, two agents run the approval flow, tool errors |
+| `mcp.test.ts` | 3 | Real MCP stdio: 34 tools listed, two agents run the approval flow, tool errors |
+| `security.test.ts` | 33 | Loopback binding, signed journal (9 tamper cases), token expiry/revoke/rotate, admin API + audit + replay, rate limit, verified evidence, prompt-injection guard, gate status |
+| `enforcement.test.ts` | 12 | gate-check CLI exit codes, report-evidence (CI = verified), Claude Code hook: edit / push / deploy / unreachable core |
 
 ## 14.3 Browser (Playwright, real dashboard)
 

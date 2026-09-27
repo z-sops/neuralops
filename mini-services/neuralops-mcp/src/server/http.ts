@@ -15,11 +15,15 @@ import {
 } from '../engines/context.js'
 import { approverFor } from '../engines/authority.js'
 import { demoToken, registerAgent } from '../engines/agents.js'
-import { genesis, verifyIntegrity } from '../engines/replay.js'
+import { deletePolicy, revokeAgent, rotateToken, setAuthority, setPolicy } from '../engines/admin.js'
+import { gateStatus } from '../engines/gate.js'
+import { genesis, verifyIntegrity, type JournalFile } from '../engines/replay.js'
+import { sha256 } from '../state/store.js'
 import { TOOL_DEFS, callTool, type Caller } from '../mcp/tools.js'
 import { ACT_FAMILY, FAMILY_COLOR, FAMILY_DESCRIPTION } from '../protocol/act-types.js'
 import { HTTP_STATUS, NeuralOpsError, forbidden, notFound } from '../errors.js'
-import { bearer, resolveCaller } from './identity.js'
+import { bearer, canAdminister, resolveCaller } from './identity.js'
+import { RateLimiter } from './ratelimit.js'
 
 const MAX_BODY = 256 * 1024
 
@@ -69,12 +73,19 @@ export function snapshotState(config?: Pick<Config, 'mode'>) {
   }
 }
 
-export function createHttpHandler(config: Config) {
-  function send(res: ServerResponse, status: number, body: unknown) {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+export function createHttpHandler(config: Config, deps: { journal?: JournalFile | null } = {}) {
+  const limiter = config.rateLimit ? new RateLimiter(config.rateLimit.perSecond, config.rateLimit.burst) : null
+
+  function send(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store',
+      ...extra,
+    }
     if (config.corsOrigin) {
       headers['Access-Control-Allow-Origin'] = config.corsOrigin
-      headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+      headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
       headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Agent-Id'
     }
     res.writeHead(status, headers)
@@ -102,6 +113,18 @@ export function createHttpHandler(config: Config) {
     void caller
   }
 
+  function requireAdmin(caller: Caller) {
+    if (!canAdminister(config, caller)) throw forbidden('This endpoint needs the admin token')
+  }
+
+  /** Who performed an admin action, for the audit trail. */
+  const actorOf = (caller: Caller) => (caller.isAdmin ? 'admin' : config.mode === 'demo' ? 'admin(demo)' : caller.agentId ?? 'unknown')
+
+  function rateLimitKey(req: IncomingMessage): string {
+    const token = bearer(req.headers.authorization)
+    return token ? `t:${sha256(token)}` : `ip:${req.socket.remoteAddress ?? '?'}`
+  }
+
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') return send(res, 204, null)
     const url = new URL(req.url || '/', 'http://localhost')
@@ -111,6 +134,13 @@ export function createHttpHandler(config: Config) {
     try {
       if (method === 'GET' && path === '/api/health') {
         return send(res, 200, { ok: true, mode: config.mode, ledgerLength: store.ledger.length })
+      }
+
+      if (limiter) {
+        const wait = limiter.take(rateLimitKey(req))
+        if (wait > 0) {
+          return send(res, 429, { ok: false, error: `Rate limit exceeded; retry in ${wait}s`, errorCode: 'rate_limited' }, { 'Retry-After': String(wait) })
+        }
       }
 
       if (method === 'GET') {
@@ -132,7 +162,13 @@ export function createHttpHandler(config: Config) {
           const events = taskId ? store.ledgerForTask(taskId) : store.ledger
           return send(res, 200, events.slice(-limit).reverse())
         }
-        if (path === '/api/integrity') return send(res, 200, verifyIntegrity())
+        if (path === '/api/integrity') return send(res, 200, verifyIntegrity(deps.journal))
+        if (path === '/api/gate/status') {
+          const taskId = q('taskId')
+          if (!taskId) throw new NeuralOpsError('invalid', 'taskId is required')
+          const status = gateStatus(taskId, q('action') || 'complete', q('scope') || 'production')
+          return send(res, 200, status)
+        }
         if (path === '/api/whoami') {
           return send(res, 200, {
             agent: caller.agentId ? store.agents.get(caller.agentId) ?? null : null,
@@ -197,9 +233,32 @@ export function createHttpHandler(config: Config) {
 
         if (path === '/api/agents') {
           const caller = callerFor(req, null)
-          if (config.mode === 'secure' && !caller.isAdmin) throw forbidden('Registering agents needs the admin token')
-          const { agent, token } = registerAgent(body, { asAdmin: caller.isAdmin })
-          return send(res, 201, { ok: true, agent, token })
+          requireAdmin(caller)
+          const { agent, token, expiresAt } = registerAgent(body, { asAdmin: canAdminister(config, caller) })
+          return send(res, 201, { ok: true, agent, token, expiresAt })
+        }
+
+        if (path === '/api/policies') {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          return send(res, 201, { ok: true, policy: setPolicy(body, actorOf(caller)) })
+        }
+
+        const am = path.match(/^\/api\/agents\/([^/]+)\/(revoke|rotate)$/)
+        if (am) {
+          const agentId = decodeURIComponent(am[1])
+          if (am[2] === 'revoke') {
+            const caller = callerFor(req, null)
+            requireAdmin(caller)
+            revokeAgent(agentId, actorOf(caller))
+            return send(res, 200, { ok: true, agentId, revoked: true })
+          }
+          // rotate: admin for anyone, or an agent for itself with its current token
+          const caller = callerFor(req, null)
+          const isSelf = caller.via === 'token' && caller.agentId === agentId
+          if (!isSelf) requireAdmin(caller)
+          const out = rotateToken(agentId, body, isSelf ? agentId : actorOf(caller))
+          return send(res, 200, { ok: true, agentId, ...out, note: 'Store this token now — previous tokens no longer work.' })
         }
 
         if (path === '/api/demo/seed') {
@@ -213,6 +272,29 @@ export function createHttpHandler(config: Config) {
           return send(res, 200, { ok: true, state: snapshotState(config) })
         }
         throw notFound(`No route POST ${path}`)
+      }
+
+      if (method === 'PUT') {
+        const body = await readBody(req)
+        const m = path.match(/^\/api\/agents\/([^/]+)\/authority$/)
+        if (m) {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          const authority = setAuthority(decodeURIComponent(m[1]), body, actorOf(caller))
+          return send(res, 200, { ok: true, authority })
+        }
+        throw notFound(`No route PUT ${path}`)
+      }
+
+      if (method === 'DELETE') {
+        const m = path.match(/^\/api\/policies\/([^/]+)$/)
+        if (m) {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          deletePolicy(decodeURIComponent(m[1]), actorOf(caller))
+          return send(res, 200, { ok: true })
+        }
+        throw notFound(`No route DELETE ${path}`)
       }
 
       return send(res, 405, { ok: false, error: 'Method not allowed' })

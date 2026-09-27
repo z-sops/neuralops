@@ -14,6 +14,7 @@ import type {
   Evidence,
   JournalRecord,
   LedgerEvent,
+  TokenInfo,
   Policy,
   Proposal,
   Question,
@@ -59,7 +60,7 @@ interface StoreData {
   questions: Map<string, Question>
   proposals: Map<string, Proposal>
   policies: Map<string, Policy>
-  tokenHashes: Map<string, string> // sha256(token) → agent id
+  tokenHashes: Map<string, TokenInfo> // sha256(token) → agent + expiry
   ledger: LedgerEvent[]
   acts: Map<string, Act>
   counters: Record<string, number>
@@ -120,6 +121,14 @@ export class Store {
 
   nextActSeq(): number {
     return ++this.d.actSeq
+  }
+
+  /** Keep the per-prefix counter ahead of an id created elsewhere (e.g. replayed admin records). */
+  noteId(id: string): void {
+    const m = id.match(/^(.+)_(\d+)$/)
+    if (!m) return
+    const n = Number(m[2])
+    if ((this.d.counters[m[1]] ?? 0) < n) this.d.counters[m[1]] = n
   }
 
   /** Replay: acts carry their original seq. */

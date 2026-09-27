@@ -19,7 +19,7 @@ describe('demo mode', () => {
   let app: App
   let base: string
   beforeAll(async () => {
-    app = createApp(loadConfig({ NEURALOPS_DATA_DIR: 'off' }))
+    app = createApp(loadConfig({ NEURALOPS_DATA_DIR: 'off', NEURALOPS_RATE_LIMIT: 'off' }))
     base = `http://localhost:${await app.listen(0)}`
   })
   afterAll(() => app.close())
@@ -52,9 +52,9 @@ describe('demo mode', () => {
     expect((await call(base, 'GET', '/api/nope')).status).toBe(404)
   })
 
-  test('tools: 33 listed, act tools need an identity, errors carry codes', async () => {
+  test('tools: 34 listed, act tools need an identity, errors carry codes', async () => {
     const tools = await call(base, 'GET', '/api/tools')
-    expect(tools.data).toHaveLength(33)
+    expect(tools.data).toHaveLength(34)
     const anon = await call(base, 'POST', '/api/tools/neuralops_claim', { taskId: 'task_44' })
     expect(anon.status).toBe(403)
     const inbox = await call(base, 'POST', '/api/tools/neuralops_inbox', {}, { 'X-Agent-Id': 'agent.qa' })
@@ -72,7 +72,7 @@ describe('demo mode', () => {
   test('websocket: snapshot on connect, ledger events live, snapshot after reseed', async () => {
     const socket = ioClient(base, { transports: ['websocket'] })
     const first = await new Promise<{ agents: unknown[] }>((res) => socket.once('state:snapshot', res))
-    expect(first.agents.length).toBe(5)
+    expect(first.agents.length).toBe(6)
     const evt = new Promise<{ actType: string }>((res) => socket.once('ledger:event', res))
     await call(base, 'POST', '/api/acts', { type: 'decision', from: 'agent.architect', payload: { taskId: 'task_42', text: 'ws' } })
     expect((await evt).actType).toBe('decision')
@@ -97,7 +97,7 @@ describe('secure mode', () => {
   let app: App
   let base: string
   beforeAll(async () => {
-    app = createApp(loadConfig({ NEURALOPS_MODE: 'secure', NEURALOPS_ADMIN_TOKEN: ADMIN, NEURALOPS_DATA_DIR: 'off' }))
+    app = createApp(loadConfig({ NEURALOPS_MODE: 'secure', NEURALOPS_ADMIN_TOKEN: ADMIN, NEURALOPS_DATA_DIR: 'off', NEURALOPS_RATE_LIMIT: 'off' }))
     base = `http://localhost:${await app.listen(0)}`
   })
   afterAll(() => app.close())

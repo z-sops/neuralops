@@ -18,7 +18,7 @@ import {
   formatZodError,
   type PayloadOf,
 } from '../protocol/payloads.js'
-import type { Approval, Gate, LedgerEvent, Task, TaskStatus } from '../state/types.js'
+import type { Approval, Clearance, Gate, LedgerEvent, Task, TaskStatus } from '../state/types.js'
 import {
   NeuralOpsError,
   conflict,
@@ -176,6 +176,14 @@ function taskView(task: Task): Task {
 }
 
 const gateKey = (g: Gate) => `${g.action}/${g.scope}`
+const gateLabel = (g: Gate) =>
+  `${g.action}/${g.scope}${g.requireVerified?.length ? ` (verified: ${g.requireVerified.join(', ')})` : ''}`
+
+/** Evidence is verified when its producer holds `attest` authority for that evidence type (e.g. CI). */
+function attestation(agentId: string, type: string): { verified: boolean; verifiedBy: string | null } {
+  const verified = hasAuthority(agentId, 'attest', type)
+  return { verified, verifiedBy: verified ? agentId : null }
+}
 
 // ---------------------------------------------------------------- dispatcher
 
@@ -232,8 +240,12 @@ export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult
   }
 
   try {
-    if (!store.agents.has(act.from)) {
+    const actor = store.agents.get(act.from)
+    if (!actor) {
       throw forbidden(`Unknown agent ${act.from}. Register the agent before it can act.`)
+    }
+    if (actor.revokedAt) {
+      throw forbidden(`${act.from} was revoked at ${actor.revokedAt}; an admin must re-issue its token.`)
     }
     const schema = PAYLOAD_SCHEMAS[act.type]
     const pr = schema.safeParse(act.payload)
@@ -295,6 +307,7 @@ const handleCreateTask: Handler<'create_task'> = (act, p) => {
     openItems: p.openItems ?? [],
     nextSteps: p.nextSteps ?? [],
     gates: dedupeGates(p.gates ?? []),
+    clearances: [],
     resultRef: null,
     progress: 0,
     eta: null,
@@ -314,8 +327,28 @@ const handleCreateTask: Handler<'create_task'> = (act, p) => {
 
 function dedupeGates(gates: Gate[]): Gate[] {
   const seen = new Map<string, Gate>()
-  for (const g of gates) seen.set(gateKey(g), { action: g.action, scope: g.scope })
+  for (const g of gates) {
+    const prev = seen.get(gateKey(g))
+    const req = [...new Set([...(prev?.requireVerified ?? []), ...(g.requireVerified ?? [])])].sort()
+    seen.set(gateKey(g), { action: g.action, scope: g.scope, ...(req.length ? { requireVerified: req } : {}) })
+  }
   return [...seen.values()].sort((a, b) => gateKey(a).localeCompare(gateKey(b)))
+}
+
+/** Gates (or verified-evidence requirements) present in `before` but missing from `after`. */
+function weakenedGates(before: Gate[], after: Gate[]): string[] {
+  const out: string[] = []
+  for (const g of before) {
+    const n = after.find((x) => gateKey(x) === gateKey(g))
+    if (!n) {
+      out.push(gateLabel(g))
+      continue
+    }
+    for (const t of g.requireVerified ?? []) {
+      if (!(n.requireVerified ?? []).includes(t)) out.push(`${gateKey(g)} verified:${t}`)
+    }
+  }
+  return out
 }
 
 const handleClaim: Handler<'claim'> = (act, p) => {
@@ -393,13 +426,33 @@ const handleComplete: Handler<'complete'> = (act, p) => {
     throw conflict(`Task ${task.id} is blocked (${task.blockedReason}). Re-claim it to unblock first.`)
   }
 
+  // ---- verified-evidence requirements (no authority or approval can skip these) ----
+  const pending = (p.evidence ?? []).map((e) => ({ type: e.type, ...attestation(act.from, e.type) }))
+  for (const g of task.gates) {
+    if (g.action !== 'complete' && g.action !== '*') continue
+    for (const type of g.requireVerified ?? []) {
+      const onTask = store.evidenceForTask(task.id).some((e) => e.type === type && e.verified)
+      const inThisAct = pending.some((e) => e.type === type && e.verified)
+      if (!onTask && !inThisAct) {
+        throw conflict(
+          `Gate ${gateKey(g)} requires VERIFIED "${type}" evidence on ${task.id} (recorded by an agent with attest authority, e.g. CI). Self-reported evidence does not count.`
+        )
+      }
+    }
+  }
+
   // ---- authority gate ----
   const toConsume: Approval[] = []
+  const clearances: Clearance[] = []
   for (const scope of completionScopes(task, p)) {
-    if (hasAuthority(act.from, 'complete', scope)) continue
+    if (hasAuthority(act.from, 'complete', scope)) {
+      clearances.push({ action: 'complete', scope, via: 'authority', approvalId: null, by: act.from, actId: act.id, at: act.timestamp })
+      continue
+    }
     const granted = findConsumableApproval(act.from, 'complete', scope, task.id)
     if (granted) {
       toConsume.push(granted)
+      clearances.push({ action: 'complete', scope, via: 'approval', approvalId: granted.id, by: act.from, actId: act.id, at: act.timestamp })
       continue
     }
     const existing = findPendingApproval(act.from, 'complete', scope, task.id)
@@ -451,11 +504,13 @@ const handleComplete: Handler<'complete'> = (act, p) => {
       producedBy: act.from,
       references: [...act.references],
       timestamp: act.timestamp,
+      ...attestation(act.from, e.type),
     })
     task.evidenceIds.push(id)
     evidenceIds.push(id)
   }
   for (const a of toConsume) consumeApproval(a, act.id, act.timestamp)
+  task.clearances.push(...clearances)
   task.status = 'completed'
   task.resultRef = p.resultRef ?? p.summary
   task.progress = 100
@@ -465,7 +520,7 @@ const handleComplete: Handler<'complete'> = (act, p) => {
     act,
     task,
     before,
-    { status: task.status, resultRef: task.resultRef, progress: 100, consumedApprovals: toConsume.map((a) => a.id) },
+    { status: task.status, resultRef: task.resultRef, progress: 100, consumedApprovals: toConsume.map((a) => a.id), clearances: clearances.map((c) => `${c.action}/${c.scope} via ${c.via}`) },
     `${act.from} completed task ${task.id}: ${p.summary}`,
     [...evidenceIds, ...toConsume.map((a) => a.id)]
   )
@@ -592,10 +647,12 @@ const handleEvidence: Handler<'evidence'> = (act, p) => {
     producedBy: act.from,
     references: [...act.references],
     timestamp: act.timestamp,
+    ...attestation(act.from, p.type),
   })
   task.evidenceIds.push(id)
   task.updatedAt = act.timestamp
-  const evt = record(act, task, before, { evidenceIds: [...task.evidenceIds] }, `${act.from} recorded evidence [${id}] (${p.type}): ${p.summary}`, [id])
+  const verified = store.evidence.get(id)!.verified
+  const evt = record(act, task, before, { evidenceIds: [...task.evidenceIds], verified }, `${act.from} recorded ${verified ? 'VERIFIED ' : ''}evidence [${id}] (${p.type}): ${p.summary}`, [id])
   return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
@@ -635,10 +692,10 @@ const handleUpdate: Handler<'update'> = (act, p) => {
       throw invalid('gates must be an array of {action, scope}')
     }
     const next = dedupeGates(p.value as Gate[])
-    const removed = task.gates.filter((g) => !next.some((n) => gateKey(n) === gateKey(g)))
+    const removed = weakenedGates(task.gates, next)
     if (removed.length && !canGovern(act.from)) {
       throw forbidden(
-        `Removing gates (${removed.map(gateKey).join(', ')}) needs govern authority. Adding gates is allowed.`
+        `Removing gates or verified-evidence requirements (${removed.join(', ')}) needs govern authority. Adding them is allowed.`
       )
     }
     task.gates = next

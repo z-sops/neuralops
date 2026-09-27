@@ -1,0 +1,21 @@
+{
+  "$comment": "Merge into <your app repo>/.claude/settings.json (or ~/.claude/settings.json). Use forward slashes in the path, also on Windows. NEURALOPS_TOKEN is THIS agent's own token.",
+  "env": {
+    "NEURALOPS_URL": "http://127.0.0.1:3031",
+    "NEURALOPS_TOKEN": "nops_demo_backend",
+    "NEURALOPS_SCOPE": "production"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun D:/Projects/neuralops/mini-services/neuralops-mcp/src/hooks/claude-pretooluse.ts"
+          }
+        ]
+      }
+    ]
+  }
+}

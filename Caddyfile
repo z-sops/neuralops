@@ -1,22 +1,36 @@
-:81 {
-	@transform_port_query {
-		query XTransformPort=*
-	}
+# NeuralOps gateway (local).
+#
+# - Listens on loopback only: other machines on your Wi-Fi cannot reach it.
+# - ?XTransformPort=3031 goes to the Coordination Core. ANY other port value is
+#   refused (403). The original sandbox config forwarded to whatever port the
+#   URL named, which turned the gateway into an open proxy to every local
+#   service (databases, admin panels, …).
+# - Everything else goes to the Next.js dashboard on :3000.
 
-	handle @transform_port_query {
-		reverse_proxy localhost:{query.XTransformPort} {
+{
+	auto_https off
+	default_bind 127.0.0.1
+}
+
+http://:81 {
+	@core query XTransformPort=3031
+	handle @core {
+		reverse_proxy 127.0.0.1:3031 {
 			header_up Host {host}
 			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
 			header_up X-Real-IP {remote_host}
 		}
 	}
 
+	@other_port query XTransformPort=*
+	handle @other_port {
+		respond "Forbidden: only the NeuralOps core (3031) is reachable through this gateway" 403
+	}
+
 	handle {
-		reverse_proxy localhost:3000 {
+		reverse_proxy 127.0.0.1:3000 {
 			header_up Host {host}
 			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
 			header_up X-Real-IP {remote_host}
 		}
 	}

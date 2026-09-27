@@ -15,26 +15,35 @@ export interface App {
   io: IOServer
   journal: JournalFile | null
   restored: boolean
-  listen(port?: number): Promise<number>
+  migrated: boolean
+  listen(port?: number, host?: string): Promise<number>
   close(): Promise<void>
 }
 
-export function bootstrapState(config: Config): { journal: JournalFile | null; restored: boolean } {
-  const journal = config.dataDir ? new JournalFile(config.dataDir) : null
-  const records = journal?.load() ?? null
-  if (records) {
-    replay(records) // throws loudly on divergence — never silently wipes history
+export function bootstrapState(config: Config): { journal: JournalFile | null; restored: boolean; migrated: boolean } {
+  const journal = config.dataDir
+    ? new JournalFile(config.dataDir, { key: config.journalKey, backups: config.backups })
+    : null
+  const loaded = journal?.load() ?? null // throws JournalTamperError on tampering
+  if (loaded) {
+    journal!.backup('boot')
+    replay(loaded.records) // throws loudly on divergence — never silently wipes history
+    if (loaded.legacy) {
+      // Unsigned V0.1.1 journal: accepted once, then signed from here on.
+      journal!.rewrite(store.journal)
+      console.warn('[neuralops] migrated an unsigned journal to the signed format (backup kept)')
+    }
     journal!.attach()
-    return { journal, restored: true }
+    return { journal, restored: true, migrated: loaded.legacy }
   }
   journal?.attach()
   genesis(config.seedOnEmpty ? 'demo' : 'empty')
-  return { journal, restored: false }
+  return { journal, restored: false, migrated: false }
 }
 
 export function createApp(config: Config): App {
-  const { journal, restored } = bootstrapState(config)
-  const handler = createHttpHandler(config)
+  const { journal, restored, migrated } = bootstrapState(config)
+  const handler = createHttpHandler(config, { journal })
   const http = createServer((req, res) => {
     handler(req, res).catch((e) => {
       console.error('[neuralops] handler crash', e)
@@ -50,9 +59,11 @@ export function createApp(config: Config): App {
     io: ws.io,
     journal,
     restored,
-    listen(port = config.port) {
-      return new Promise((resolve) => {
-        http.listen(port, () => {
+    migrated,
+    listen(port = config.port, host = config.host) {
+      return new Promise((resolve, reject) => {
+        http.once('error', reject)
+        http.listen(port, host, () => {
           const addr = http.address()
           resolve(typeof addr === 'object' && addr ? addr.port : port)
         })

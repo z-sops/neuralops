@@ -36,6 +36,7 @@ function baseTask(partial: Partial<Task> & Pick<Task, 'id' | 'title' | 'objectiv
     openItems: [],
     nextSteps: [],
     gates: [],
+    clearances: [],
     resultRef: null,
     progress: 0,
     eta: null,
@@ -102,10 +103,17 @@ export function applyDemoSeed(seededAt: string): void {
       authority: [direct('deny', 'production', 'agent.security')],
       status: 'online', subscriptions: ['workspace'], createdAt: iso(580),
     },
+    {
+      // CI pipeline identity: its evidence counts as VERIFIED (attest authority).
+      id: 'agent.ci', workspaceId: ws.id, name: 'CI Pipeline', model: 'Custom', role: 'ci', reportsTo: 'agent.architect',
+      authority: [direct('attest', '*', 'agent.ci')],
+      status: 'online', subscriptions: ['workspace'], createdAt: iso(570),
+    },
   ]
   for (const a of agents) {
+    a.revokedAt = null
     store.agents.set(a.id, a)
-    store.tokenHashes.set(sha256(demoToken(a.id)), a.id)
+    store.tokenHashes.set(sha256(demoToken(a.id)), { agentId: a.id, expiresAt: null })
   }
 
   // --- task 42: build auth module (gated for production) ---
@@ -169,12 +177,13 @@ export function applyDemoSeed(seededAt: string): void {
       taskId: 'task_42', type: 'result',
       summary: 'Backend implementation complete: login, logout, session validation, role checks.',
       ref: 'repo://api-gateway/src/auth/session.ts', producedBy: 'agent.backend',
-      references: decisionIds, timestamp: iso(120),
+      references: decisionIds, timestamp: iso(120), verified: false, verifiedBy: null,
     },
     {
       taskId: 'task_42', type: 'test',
       summary: '42 unit tests passed (auth flows, session expiry, role enforcement).',
       ref: 'ci://pipeline/8421', producedBy: 'agent.backend', references: [], timestamp: iso(90),
+      verified: false, verifiedBy: null,
     },
   ]
   const evidenceIds = evidence.map((e) => {
@@ -246,4 +255,4 @@ function history(type: ActType, actor: string, taskId: string, summary: string, 
   })
 }
 
-export const DEMO_AGENT_IDS = ['agent.ceo', 'agent.architect', 'agent.backend', 'agent.qa', 'agent.security']
+export const DEMO_AGENT_IDS = ['agent.ceo', 'agent.architect', 'agent.backend', 'agent.qa', 'agent.security', 'agent.ci']

@@ -32,7 +32,7 @@ describe('MCP stdio transport', () => {
   let architect: Client
 
   beforeAll(async () => {
-    app = createApp(loadConfig({ NEURALOPS_DATA_DIR: 'off' }))
+    app = createApp(loadConfig({ NEURALOPS_DATA_DIR: 'off', NEURALOPS_RATE_LIMIT: 'off' }))
     base = `http://localhost:${await app.listen(0)}`
     backend = await agentClient(base, 'nops_demo_backend')
     architect = await agentClient(base, 'nops_demo_architect')
@@ -43,9 +43,9 @@ describe('MCP stdio transport', () => {
     await app.close()
   })
 
-  test('lists all 33 tools with JSON schemas', async () => {
+  test('lists all 34 tools with JSON schemas', async () => {
     const { tools } = await backend.listTools()
-    expect(tools).toHaveLength(33)
+    expect(tools).toHaveLength(34)
     const complete = tools.find((t) => t.name === 'neuralops_complete')!
     expect(complete.inputSchema.required).toEqual(expect.arrayContaining(['taskId', 'summary']))
   })

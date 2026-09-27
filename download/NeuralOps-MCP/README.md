@@ -1,7 +1,7 @@
 # NeuralOps MCP — Product Documentation Package
 
 > **AI Workforce Coordination Protocol**
-> V0.1.1 — Hardened build (see `17-V0.1.1-Hardening.md`)
+> V0.1.2 — Security build (see `17-V0.1.1-Hardening.md` and `18-V0.1.2-Security.md`)
 
 ---
 
@@ -22,7 +22,7 @@ NeuralOps-MCP/
 ├── 04-Coordination-Protocol.md            ← act envelope, 23 acts, 6 families
 ├── 05-State-Layer.md                      ← entities, ledger, design principle
 ├── 06-Engines.md                          ← task-manager, authority, context
-├── 07-MCP-Tools.md                        ← 33 tools, real MCP stdio transport
+├── 07-MCP-Tools.md                        ← 34 tools, real MCP stdio transport
 ├── 08-API-Reference.md                    ← REST + WebSocket full reference
 ├── 09-Demo-Seed.md                        ← Engineering workspace scenario
 ├── 10-Protocol-Inspector.md               ← dashboard sections + tech stack
@@ -32,7 +32,8 @@ NeuralOps-MCP/
 ├── 14-Verification.md                     ← browser-verified status
 ├── 15-Design-Principles.md               ← 10 core principles
 ├── 16-Files-Index.md                      ← sab files ka index
-└── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, security, MCP setup, tests
+├── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, MCP setup, tests
+└── 18-V0.1.2-Security.md                  ← V0.1.2: gateway, signed journal, tokens, CI/hook enforcement
 ```
 
 ## Kaise read karein
@@ -58,10 +59,12 @@ Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, 
 ## Status
 
 - ✅ Coordination Core (port 3031): persistent journal, hash-chained ledger, secure mode
-- ✅ Real MCP stdio server (33 tools)
+- ✅ Real MCP stdio server (34 tools)
+- ✅ Enforcement outside the model: Claude Code hook + GitHub required check + verified CI evidence
+- ✅ Signed journal, token expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
 - ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
-- ✅ 55 automated tests; tsc + lint clean (frontend + backend)
-- 📋 Next: external enforcement (GitHub check / hooks), multi-workspace, DB-backed journal
+- ✅ 101 automated tests; tsc + lint clean (frontend + backend)
+- 📋 Next: multi-workspace, DB-backed journal, hooks for Codex/Gemini CLI
 
 ---
 

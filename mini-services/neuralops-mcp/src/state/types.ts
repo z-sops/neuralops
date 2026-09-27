@@ -32,6 +32,19 @@ export interface Policy {
 export interface Gate {
   action: string
   scope: string
+  /** Evidence types that must exist VERIFIED on the task before this gate can be passed. */
+  requireVerified?: string[]
+}
+
+/** Recorded when a gated completion passes, so external checks (CI, hooks) can see it. */
+export interface Clearance {
+  action: string
+  scope: string
+  via: 'authority' | 'approval'
+  approvalId: string | null
+  by: string
+  actId: string
+  at: string
 }
 
 export interface Agent {
@@ -45,6 +58,8 @@ export interface Agent {
   status: AgentStatus
   subscriptions: string[] // task ids | "role:qa" | "workspace"
   createdAt: string
+  /** Set when an admin revokes the agent; revoked agents cannot act until re-issued a token. */
+  revokedAt?: string | null
 }
 
 export type TaskStatus =
@@ -87,6 +102,7 @@ export interface Task {
   openItems: string[]
   nextSteps: string[]
   gates: Gate[]
+  clearances: Clearance[]
   resultRef: string | null
   progress: number
   eta: string | null
@@ -117,6 +133,9 @@ export interface Evidence {
   producedBy: string
   references: string[]
   timestamp: string
+  /** true when produced by an agent holding `attest` authority for this evidence type (e.g. CI). */
+  verified: boolean
+  verifiedBy: string | null
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied'
@@ -173,12 +192,14 @@ export interface Proposal {
 }
 
 // Tamper-evident ledger event. `hash` = sha256(prevHash + canonical body).
+export type LedgerEventType = ActType | 'admin'
+
 export interface LedgerEvent {
   id: string
   seq: number
   workspaceId: string
   actId: string
-  actType: ActType
+  actType: LedgerEventType
   actor: string
   via: ActVia
   taskId: string | null
@@ -201,7 +222,20 @@ export interface Workspace {
 }
 
 // ---- journal (source of truth) ----
+export interface TokenInfo {
+  agentId: string
+  expiresAt: string | null
+}
+
+export type AdminRecord =
+  | { k: 'policy_set'; policy: Policy; by: string; at: string }
+  | { k: 'policy_delete'; id: string; by: string; at: string }
+  | { k: 'authority_set'; agentId: string; authority: AuthorityScope[]; by: string; at: string }
+  | { k: 'token'; agentId: string; tokenHash: string; expiresAt: string | null; replaceExisting: boolean; by: string; at: string }
+  | { k: 'revoke'; agentId: string; by: string; at: string }
+
 export type JournalRecord =
   | { k: 'genesis'; seed: 'demo' | 'empty'; seededAt: string; version: 1 }
-  | { k: 'register'; agent: Agent; tokenHash: string; at: string }
+  | { k: 'register'; agent: Agent; tokenHash: string; expiresAt?: string | null; at: string }
   | { k: 'act'; act: import('../protocol/envelope.js').Act }
+  | AdminRecord

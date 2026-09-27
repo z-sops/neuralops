@@ -14,6 +14,7 @@ import type { Approval, Decision, Evidence, Proposal, Question, Task } from '../
 import { estimateTokens, formatTokens, TOKEN_METHOD } from '../state/token-estimate.js'
 import { isExpired } from './task-manager.js'
 import { notFound } from '../errors.js'
+import { UNTRUSTED_NOTICE, untrusted } from './guard.js'
 
 export interface CompactedContext {
   taskId: string
@@ -22,14 +23,16 @@ export interface CompactedContext {
   completed: string[]
   decisions: { id: string; text: string; decidedBy: string }[]
   constraints: string[]
-  evidence: { id: string; type: string; summary: string; ref: string }[]
+  evidence: { id: string; type: string; summary: string; ref: string; verified: boolean; verifiedBy: string | null }[]
   open: string[]
   next: string[]
   gates: string[]
+  clearances: string[]
   owner: string | null
   status: string
   tokens: number
   method: string
+  notice: string
 }
 
 export interface FullContext {
@@ -73,45 +76,54 @@ export function getCompactedContext(taskId: string): CompactedContext {
   const now = nowIso()
 
   const completed: string[] = []
-  if (task.status === 'completed') completed.push(task.resultRef || task.objective)
-  for (const e of evidence) if (e.type === 'result') completed.push(e.summary)
+  if (task.status === 'completed') completed.push(untrusted(task.resultRef || task.objective))
+  for (const e of evidence) if (e.type === 'result') completed.push(untrusted(e.summary))
   for (const h of task.handoffs) {
     if (h.accepted === true) completed.push(`Handoff ${h.from} → ${h.to} (${h.intent}) accepted`)
   }
 
-  const open = [...task.openItems]
-  if (task.status === 'blocked' && task.blockedReason) open.push(`BLOCKED: ${task.blockedReason}`)
+  const open = task.openItems.map((x) => untrusted(x))
+  if (task.status === 'blocked' && task.blockedReason) open.push(`BLOCKED: ${untrusted(task.blockedReason)}`)
   if (task.pendingHandoffTo) open.push(`Handoff pending to ${task.pendingHandoffTo}`)
   for (const a of approvals) {
     if (a.status === 'pending') open.push(`Approval ${a.id} pending: ${a.action}/${a.scope} for ${a.requestedBy} (approver ${a.approver})`)
     if (a.status === 'approved' && !a.consumedAt) open.push(`Approval ${a.id} granted, not yet used: ${a.action}/${a.scope} for ${a.requestedBy}`)
-    if (a.status === 'denied') open.push(`Approval ${a.id} DENIED by ${a.decidedBy}: ${a.reason}`)
+    if (a.status === 'denied') open.push(`Approval ${a.id} DENIED by ${a.decidedBy}: ${untrusted(a.reason)}`)
   }
   for (const q of store.questions.values()) {
-    if (q.taskId === taskId && exchangeStatus(q, now) === 'open') open.push(`Q ${q.id} ${q.from} → ${q.to}: ${q.about}`)
+    if (q.taskId === taskId && exchangeStatus(q, now) === 'open') open.push(`Q ${q.id} ${q.from} → ${q.to}: ${untrusted(q.about)}`)
   }
   for (const p of store.proposals.values()) {
-    if (p.taskId === taskId && exchangeStatus(p, now) === 'open') open.push(`Proposal ${p.id} ${p.from} → ${p.to}: ${p.what}`)
+    if (p.taskId === taskId && exchangeStatus(p, now) === 'open') open.push(`Proposal ${p.id} ${p.from} → ${p.to}: ${untrusted(p.what)}`)
   }
 
-  const next = [...task.nextSteps]
-  if (task.eta) next.push(`ETA: ${task.eta}`)
+  const next = task.nextSteps.map((x) => untrusted(x))
+  if (task.eta) next.push(`ETA: ${untrusted(task.eta, 100)}`)
 
   const compacted: CompactedContext = {
     taskId,
-    title: task.title,
-    objective: task.objective,
+    title: untrusted(task.title, 200),
+    objective: untrusted(task.objective, 2000),
     completed,
-    decisions: decisions.map((d) => ({ id: d.id, text: d.text, decidedBy: d.decidedBy })),
-    constraints: task.constraints,
-    evidence: evidence.map((e) => ({ id: e.id, type: e.type, summary: e.summary, ref: e.ref })),
+    decisions: decisions.map((d) => ({ id: d.id, text: untrusted(d.text), decidedBy: d.decidedBy })),
+    constraints: task.constraints.map((x) => untrusted(x)),
+    evidence: evidence.map((e) => ({
+      id: e.id,
+      type: untrusted(e.type, 64),
+      summary: untrusted(e.summary),
+      ref: untrusted(e.ref, 300),
+      verified: e.verified,
+      verifiedBy: e.verifiedBy,
+    })),
     open,
     next,
-    gates: task.gates.map((g) => `${g.action}/${g.scope}`),
+    gates: task.gates.map((g) => `${g.action}/${g.scope}${g.requireVerified?.length ? ` (needs verified: ${g.requireVerified.join(', ')})` : ''}`),
+    clearances: (task.clearances ?? []).map((c) => `${c.action}/${c.scope} cleared via ${c.via}${c.approvalId ? ` ${c.approvalId}` : ''} by ${c.by}`),
     owner: task.assignee,
     status: task.status,
     tokens: 0,
     method: TOKEN_METHOD,
+    notice: UNTRUSTED_NOTICE,
   }
   compacted.tokens = estimateTokens(formatCompactedContext(compacted))
   return compacted
@@ -168,14 +180,20 @@ function section(lines: string[], title: string, items: string[], empty: string)
 }
 
 export function formatCompactedContext(c: CompactedContext): string {
-  const lines: string[] = [`TASK ${c.taskId} — ${c.title}`, '', 'OBJECTIVE', c.objective, '']
+  const lines: string[] = [`TASK ${c.taskId} — ${c.title}`, c.notice, '', 'OBJECTIVE', c.objective, '']
   section(lines, 'COMPLETED', c.completed, '(none yet)')
   section(lines, 'DECISIONS', c.decisions.map((d) => `[${d.id}] ${d.text} (by ${d.decidedBy})`), '(none yet)')
   section(lines, 'CONSTRAINTS', c.constraints, '(none)')
-  section(lines, 'EVIDENCE', c.evidence.map((e) => `[${e.id}] (${e.type}) ${e.summary} → ${e.ref}`), '(none yet)')
+  section(
+    lines,
+    'EVIDENCE',
+    c.evidence.map((e) => `[${e.id}] (${e.type}, ${e.verified ? `VERIFIED by ${e.verifiedBy}` : 'self-reported'}) ${e.summary} → ${e.ref}`),
+    '(none yet)'
+  )
   section(lines, 'OPEN', c.open, '(none)')
   section(lines, 'NEXT', c.next, '(none)')
   if (c.gates.length) section(lines, 'GATES', c.gates, '')
+  if (c.clearances.length) section(lines, 'CLEARED', c.clearances, '')
   lines.push(`OWNER: ${c.owner || '(unclaimed)'}   STATUS: ${c.status}`)
   return lines.join('\n')
 }
@@ -219,7 +237,7 @@ export function getInbox(agentId: string) {
     agentId,
     myTasks: tasks
       .filter((t) => t.assignee === agentId && t.status !== 'completed' && t.status !== 'failed')
-      .map((t) => ({ id: t.id, title: t.title, status: t.status, progress: t.progress })),
+      .map((t) => ({ id: t.id, title: untrusted(t.title, 200), status: t.status, progress: t.progress })),
     handoffsToAccept: tasks
       .filter((t) => t.status === 'handoff_pending' && t.pendingHandoffTo === agentId)
       .map((t) => ({ taskId: t.id, from: t.assignee, intent: t.handoffs.at(-1)?.intent ?? null })),
@@ -234,10 +252,10 @@ export function getInbox(agentId: string) {
     ),
     questions: [...store.questions.values()]
       .filter((q) => forMe(q.to) && exchangeStatus(q, now) === 'open')
-      .map((q) => ({ id: q.id, from: q.from, about: q.about, taskId: q.taskId, expiresAt: q.expiresAt })),
+      .map((q) => ({ id: q.id, from: q.from, about: untrusted(q.about), taskId: q.taskId, expiresAt: q.expiresAt })),
     proposals: [...store.proposals.values()]
       .filter((p) => forMe(p.to) && exchangeStatus(p, now) === 'open')
-      .map((p) => ({ id: p.id, from: p.from, what: p.what, why: p.why, taskId: p.taskId, expiresAt: p.expiresAt })),
+      .map((p) => ({ id: p.id, from: p.from, what: untrusted(p.what), why: untrusted(p.why), taskId: p.taskId, expiresAt: p.expiresAt })),
   }
 }
 

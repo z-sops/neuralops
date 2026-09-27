@@ -1,10 +1,10 @@
 # NeuralOps MCP — Tool Registry
 
-> V0.1.1: 33 tools, asli MCP stdio transport. Tafseel: `17-V0.1.1-Hardening.md`.
+> V0.1.2: 34 tools (naya: `neuralops_gate_status`), asli MCP stdio transport. Tafseel: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`.
 
-## 7.1 Tool surface (33 tools)
+## 7.1 Tool surface (34 tools)
 
-### Query tools (10)
+### Query tools (11)
 
 | Tool | Kaam |
 |------|------|
@@ -17,7 +17,8 @@
 | `neuralops_whoami` | Aap ka agent record, authority, reporting line |
 | `neuralops_workspace` | Agents, tasks, pending approvals, policies |
 | `neuralops_tasks` | Tasks list (optional status filter) |
-| `neuralops_register` | Naya agent register (secure mode mein admin only), token ek dafa milta hai |
+| `neuralops_register` | Naya agent register (admin only), token ek dafa milta hai |
+| `neuralops_gate_status` | Kya is task ke liye merge (`complete`) ya `deploy` cleared hai? CI aur hooks yahi jawab enforce karte hain |
 
 ### Act tools (23): one per act type
 

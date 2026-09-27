@@ -27,6 +27,7 @@ export interface Agent {
   createdAt: string
   /** Policies this agent is the named approver for, e.g. "complete/production". */
   approverFor?: string[]
+  revokedAt?: string | null
 }
 
 export interface Policy {
@@ -39,6 +40,17 @@ export interface Policy {
 export interface Gate {
   action: string
   scope: string
+  requireVerified?: string[]
+}
+
+export interface Clearance {
+  action: string
+  scope: string
+  via: 'authority' | 'approval'
+  approvalId: string | null
+  by: string
+  actId: string
+  at: string
 }
 
 export type TaskStatus =
@@ -81,6 +93,7 @@ export interface Task {
   openItems: string[]
   nextSteps: string[]
   gates?: Gate[]
+  clearances?: Clearance[]
   resultRef: string | null
   progress: number
   eta?: string | null
@@ -135,7 +148,7 @@ export interface LedgerEvent {
   seq: number
   workspaceId: string
   actId: string
-  actType: ActType
+  actType: ActType | 'admin'
   actor: string
   via?: 'token' | 'impersonated' | 'system'
   taskId: string | null
@@ -202,7 +215,7 @@ export interface ActResult {
   ledgerEvent?: LedgerEvent
   approval?: Approval | null
   error?: string
-  errorCode?: 'invalid' | 'unauthenticated' | 'forbidden' | 'not_found' | 'conflict' | 'too_large'
+  errorCode?: 'invalid' | 'unauthenticated' | 'forbidden' | 'not_found' | 'conflict' | 'too_large' | 'rate_limited'
   message?: string
   stateChanged: boolean
   task?: Task | null

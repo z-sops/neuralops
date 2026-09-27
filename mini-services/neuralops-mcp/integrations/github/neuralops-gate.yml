@@ -1,0 +1,74 @@
+# NeuralOps gate for GitHub — copy to .github/workflows/neuralops-gate.yml in the
+# repo your agents work on (e.g. your app repo), then make "neuralops-gate" a
+# REQUIRED status check in branch protection for main.
+#
+# Result: a PR can only merge when NeuralOps says its task is completed and
+# every gate on it is cleared. CI's own test run is recorded as VERIFIED
+# evidence (the CI agent holds `attest` authority), so gates with
+# requireVerified: ["test"] cannot be satisfied by an agent's own claim.
+#
+# Link PRs to tasks by branch name or PR title: "task_42-auth-module".
+#
+# Secrets (repo → Settings → Secrets and variables → Actions):
+#   NEURALOPS_URL        public HTTPS URL of your NeuralOps core (secure mode!)
+#   NEURALOPS_CI_TOKEN   token of your CI agent (register it with authority attest/*)
+#
+# GitHub-hosted runners cannot reach 127.0.0.1 on your machine. Either run the
+# core somewhere reachable (secure mode + HTTPS), or use a self-hosted runner on
+# the machine where the core runs and set NEURALOPS_URL=http://127.0.0.1:3031.
+
+name: NeuralOps gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      # ↓ replace with your project's real test command
+      - name: Run tests
+        run: |
+          bun install
+          bun test
+
+      - uses: actions/checkout@v4
+        with:
+          repository: z-sops/neuralops
+          path: .neuralops
+
+      - name: Record VERIFIED test evidence in NeuralOps
+        if: success()
+        env:
+          NEURALOPS_URL: ${{ secrets.NEURALOPS_URL }}
+          NEURALOPS_TOKEN: ${{ secrets.NEURALOPS_CI_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+        run: >
+          bun .neuralops/mini-services/neuralops-mcp/src/cli/report-evidence.ts
+          --type test
+          --summary "CI tests passed on ${{ github.event.pull_request.head.sha }}"
+          --ref "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  neuralops-gate:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@v4
+        with:
+          repository: z-sops/neuralops
+          path: .neuralops
+
+      - name: Ask NeuralOps whether this PR may merge
+        env:
+          NEURALOPS_URL: ${{ secrets.NEURALOPS_URL }}
+          NEURALOPS_TOKEN: ${{ secrets.NEURALOPS_CI_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+        run: bun .neuralops/mini-services/neuralops-mcp/src/cli/gate-check.ts --action complete --scope production
