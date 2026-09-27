@@ -1,11 +1,13 @@
 'use client'
 
-import { Activity, RefreshCw, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
+import { Activity, BookOpen, RefreshCw, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import type { ConnectionState } from '@/hooks/use-neuralops'
 import { StatusDot } from './act-badge'
+import { DocsDialog } from './docs-dialog'
 
 interface HeaderProps {
   connection: ConnectionState
@@ -15,6 +17,7 @@ interface HeaderProps {
 
 export function Header({ connection, onReset, resetting }: HeaderProps) {
   const connected = connection === 'connected'
+  const [docsOpen, setDocsOpen] = useState(false)
   return (
     <header
       className={cn(
@@ -67,6 +70,15 @@ export function Header({ connection, onReset, resetting }: HeaderProps) {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => setDocsOpen(true)}
+            className="gap-1.5"
+          >
+            <BookOpen className="size-3.5" aria-hidden />
+            <span className="hidden sm:inline">Docs</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={onReset}
             disabled={resetting}
             className="gap-1.5"
@@ -77,6 +89,8 @@ export function Header({ connection, onReset, resetting }: HeaderProps) {
           </Button>
         </div>
       </div>
+
+      <DocsDialog open={docsOpen} onOpenChange={setDocsOpen} />
     </header>
   )
 }
