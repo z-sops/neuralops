@@ -30,7 +30,7 @@ export function AgentCard({ agent, reportsToName, ownedTasks }: AgentCardProps) 
   const [open, setOpen] = useState(false)
   const mh = MODEL_HUE[agent.model] ?? 'slate'
   const sh = STATUS_HUE[agent.status] ?? 'slate'
-  const isApprover = agent.authority.some((a) => a.approver === agent.id)
+  const isApprover = (agent.approverFor?.length ?? 0) > 0
 
   return (
     <Card className="overflow-hidden p-0 py-0">

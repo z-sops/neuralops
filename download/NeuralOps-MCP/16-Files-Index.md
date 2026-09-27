@@ -1,5 +1,7 @@
 # NeuralOps MCP — Files Index
 
+> V0.1.1 mein naye files: `config.ts`, `errors.ts`, `app.ts`, `engines/agents.ts`, `engines/replay.ts`, `server/identity.ts`, `mcp/stdio.ts`, `tests/*.test.ts`, `README.md`, `.mcp.example.json`. Layout: `mini-services/neuralops-mcp/README.md`.
+
 ## 16.1 Backend (mini-service)
 
 ```
@@ -9,12 +11,12 @@ mini-services/neuralops-mcp/
 └── src/
     ├── index.ts                          # bootstrap (port 3031)
     ├── protocol/
-    │   ├── act-types.ts                  # 22 act types, 6 families
+    │   ├── act-types.ts                  # 23 act types, 6 families
     │   ├── envelope.ts                   # Act envelope + zod schema
     │   └── payloads.ts                   # per-act payload schemas
     ├── state/
     │   ├── types.ts                      # all entity types
-    │   ├── store.ts                      # in-memory store + pub/sub
+    │   ├── store.ts                      # store: views + hash-chained ledger + journal
     │   └── token-estimate.ts             # chars/4 heuristic
     ├── engines/
     │   ├── task-manager.ts               # act dispatcher
@@ -70,14 +72,14 @@ src/
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `act-types.ts` | ~70 | 22 act types, 6 families, color/description maps |
+| `act-types.ts` | ~110 | 23 act types, 6 families, color/description maps, act descriptions |
 | `envelope.ts` | ~40 | Act envelope zod schema, makeId helper |
 | `payloads.ts` | ~150 | Per-act typed payload schemas (zod) |
 | `types.ts` | ~180 | All entity interfaces (Agent, Task, Decision, Evidence, Approval, LedgerEvent, etc.) |
 | `store.ts` | ~110 | In-memory maps + append-only ledger + pub/sub |
 | `token-estimate.ts` | ~20 | chars/4 token heuristic + formatter |
-| `task-manager.ts` | ~450 | Act dispatcher + 22 handlers + ledger recording |
-| `authority.ts` | ~100 | hasAuthority, approvalRequired, hasApprovedApproval, requestApproval, authorize, deny |
+| `task-manager.ts` | ~720 | Act dispatcher + 23 handlers + ledger + journal |
+| `authority.ts` | ~210 | grants, policies, approver chain, veto, single-use approvals |
 | `context.ts` | ~200 | getCompactedContext, getFullContext, getContextComparison, formatters, on-demand retrieval |
 | `tools.ts` | ~380 | 15 MCP tool definitions + callTool dispatcher |
 | `demo.ts` | ~250 | Engineering workspace seed (5 agents, 3 tasks, history) |

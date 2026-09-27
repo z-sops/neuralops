@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "neuralops": {
+      "command": "bun",
+      "args": ["mini-services/neuralops-mcp/src/mcp/stdio.ts"],
+      "env": {
+        "NEURALOPS_URL": "http://localhost:3031",
+        "NEURALOPS_TOKEN": "nops_demo_backend"
+      }
+    }
+  }
+}

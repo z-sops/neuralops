@@ -18,7 +18,7 @@ interface SharedWorkStateProps {
   selectedTaskId: string | null
   onSelectTask: (id: string) => void
   // Bump this number to force a re-fetch (e.g. after a state mutation).
-  refreshSignal: number
+  refreshSignal: number | string
 }
 
 function formatTokens(n: number): string {
@@ -31,44 +31,39 @@ export function SharedWorkState({
   onSelectTask,
   refreshSignal,
 }: SharedWorkStateProps) {
-  const [taskId, setTaskId] = useState<string | null>(selectedTaskId)
-  const [data, setData] = useState<ContextComparison | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // Keep local selection in sync when parent changes it (e.g. clicked a task card).
-  useEffect(() => {
-    setTaskId(selectedTaskId)
-  }, [selectedTaskId])
+  const taskId = selectedTaskId
+  const requestKey = taskId ? `${taskId}|${refreshSignal}` : null
+  const [result, setResult] = useState<{
+    key: string
+    taskId: string
+    data: ContextComparison | null
+    error: string | null
+  } | null>(null)
 
   // Fetch the comparison whenever the task or the refresh signal changes.
+  // State is only set from the async callbacks (no cascading renders).
   useEffect(() => {
-    if (!taskId) {
-      setData(null)
-      setError(null)
-      return
-    }
+    if (!requestKey || !taskId) return
     let cancelled = false
-    setLoading(true)
-    setError(null)
     neuralopsApi
       .getComparison(taskId)
       .then((c) => {
-        if (!cancelled) {
-          setData(c)
-          setLoading(false)
-        }
+        if (!cancelled) setResult({ key: requestKey, taskId, data: c, error: null })
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err))
-          setLoading(false)
+          setResult({ key: requestKey, taskId, data: null, error: err instanceof Error ? err.message : String(err) })
         }
       })
     return () => {
       cancelled = true
     }
-  }, [taskId, refreshSignal])
+  }, [requestKey, taskId])
+
+  const loading = !!requestKey && result?.key !== requestKey
+  // Keep showing the last numbers for the same task while a refresh is in flight.
+  const data = taskId && result?.taskId === taskId ? result.data : null
+  const error = requestKey && result?.key === requestKey ? result.error : null
 
   const reductionPct = data?.reductionPct ?? 0
   const fullTokens = data?.fullTokens ?? 0

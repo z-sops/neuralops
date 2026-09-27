@@ -1,33 +1,46 @@
 // NeuralOps Coordination Core — State Types
 //
-// The coordination core holds the source of truth. Acts mutate this state;
-// the ledger records every mutation as an immutable event.
+// The act journal is the source of truth. Everything below is a materialized
+// view that can be rebuilt by replaying the journal (see engines/replay.ts).
 
 import type { ActType } from '../protocol/act-types.js'
+import type { ActVia } from '../protocol/envelope.js'
 
 export type AgentStatus = 'online' | 'busy' | 'offline'
-export type AgentModel =
-  | 'Claude'
-  | 'Codex'
-  | 'Gemini'
-  | 'Qwen'
-  | 'GPT'
-  | 'Custom'
+export const AGENT_MODELS = ['Claude', 'Codex', 'Gemini', 'Qwen', 'GPT', 'Custom'] as const
+export type AgentModel = (typeof AGENT_MODELS)[number]
 
+// A direct grant. `action`/`scope` may be "*".
+// `requiresApproval` is kept for wire compatibility with V0.1 clients; direct
+// grants are always `false`. Gatekeeping lives in workspace Policies.
 export interface AuthorityScope {
-  action: string // "deploy" | "merge" | "delete"
-  scope: string // "production" | "staging"
+  action: string // "deploy" | "complete" | "deny" | "govern" | "*"
+  scope: string // "production" | "staging" | "*"
   requiresApproval: boolean
-  approver: string // agent id
+  approver: string
+}
+
+// Workspace-level gatekeeping rule: doing `action` in `scope` without direct
+// authority needs an approval from `approver`.
+export interface Policy {
+  id: string
+  action: string
+  scope: string
+  approver: string
+}
+
+export interface Gate {
+  action: string
+  scope: string
 }
 
 export interface Agent {
   id: string // "agent.architect"
   workspaceId: string
-  name: string // "Architect"
+  name: string
   model: AgentModel
-  role: string // "architect" | "backend" | "qa" | "security" | "ceo"
-  reportsTo: string | null // agent id
+  role: string
+  reportsTo: string | null
   authority: AuthorityScope[]
   status: AgentStatus
   subscriptions: string[] // task ids | "role:qa" | "workspace"
@@ -53,18 +66,19 @@ export interface HandoffRecord {
   to: string
   intent: string
   timestamp: string
-  accepted: boolean | null // null = pending, true = accepted, false = rejected
+  accepted: boolean | null // null = pending, true = accepted, false = rejected/cancelled
   acceptedAt?: string
   rejectedReason?: string
+  statusBefore?: TaskStatus
 }
 
 export interface Task {
-  id: string // "task_42"
+  id: string
   workspaceId: string
   title: string
   objective: string
   status: TaskStatus
-  assignee: string | null // current owner agent id
+  assignee: string | null
   claims: ClaimRecord[]
   handoffs: HandoffRecord[]
   decisionIds: string[]
@@ -72,16 +86,20 @@ export interface Task {
   constraints: string[]
   openItems: string[]
   nextSteps: string[]
+  gates: Gate[]
   resultRef: string | null
-  progress: number // 0-100
+  progress: number
+  eta: string | null
   blockedReason: string | null
   pendingHandoffTo: string | null
+  escalatedTo: string | null
+  createdBy: string | null
   createdAt: string
   updatedAt: string
 }
 
 export interface Decision {
-  id: string // "decision_D7"
+  id: string
   taskId: string
   text: string
   rationale: string | null
@@ -91,9 +109,9 @@ export interface Decision {
 }
 
 export interface Evidence {
-  id: string // "evidence_E12"
+  id: string
   taskId: string
-  type: string // "test" | "log" | "url" | "screenshot"
+  type: string
   summary: string
   ref: string
   producedBy: string
@@ -104,22 +122,26 @@ export interface Evidence {
 export type ApprovalStatus = 'pending' | 'approved' | 'denied'
 
 export interface Approval {
-  id: string // "authority_A9"
+  id: string
   workspaceId: string
   taskId: string | null
   action: string
   scope: string
   requestedBy: string
-  approver: string // agent id
+  approver: string
   status: ApprovalStatus
   decidedBy: string | null
   decidedAt: string | null
   reason: string | null
   references: string[]
   timestamp: string
+  // Single use: an approved approval is consumed by the act it unlocked.
+  consumedAt: string | null
+  consumedBy: string | null // act id
 }
 
-// Conversation thread artifacts (kept for audit; ledger also records them)
+export type ExchangeStatus = 'open' | 'answered' | 'countered' | 'expired'
+
 export interface Question {
   id: string
   taskId: string | null
@@ -127,8 +149,11 @@ export interface Question {
   to: string
   about: string
   contextRef: string | null
+  status: ExchangeStatus
   answered: boolean
   answer: string | null
+  answeredBy: string | null
+  expiresAt: string
   timestamp: string
 }
 
@@ -139,12 +164,15 @@ export interface Proposal {
   to: string
   what: string
   why: string
+  status: ExchangeStatus
   countered: boolean
   counter: string | null
+  counteredBy: string | null
+  expiresAt: string
   timestamp: string
 }
 
-// The immutable ledger event. Source of truth — everything else is a view.
+// Tamper-evident ledger event. `hash` = sha256(prevHash + canonical body).
 export interface LedgerEvent {
   id: string
   seq: number
@@ -152,13 +180,17 @@ export interface LedgerEvent {
   actId: string
   actType: ActType
   actor: string
+  via: ActVia
   taskId: string | null
   intent: string | null
   before: Record<string, unknown>
   after: Record<string, unknown>
   references: string[]
-  deltaSummary: string // human-readable one-liner
+  deltaSummary: string
   timestamp: string
+  history?: boolean // true for pre-seeded demo history
+  prevHash: string
+  hash: string
 }
 
 export interface Workspace {
@@ -167,3 +199,9 @@ export interface Workspace {
   description: string
   createdAt: string
 }
+
+// ---- journal (source of truth) ----
+export type JournalRecord =
+  | { k: 'genesis'; seed: 'demo' | 'empty'; seededAt: string; version: 1 }
+  | { k: 'register'; agent: Agent; tokenHash: string; at: string }
+  | { k: 'act'; act: import('../protocol/envelope.js').Act }

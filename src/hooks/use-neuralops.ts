@@ -31,7 +31,7 @@ import { ACT_FAMILY_STATIC } from '@/lib/neuralops-types'
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
 
 interface UseNeuralOps {
-  state: NeuralOpsState | null
+  state: NeuralOpsState
   connection: ConnectionState
   lastLedgerEvent: LedgerEvent | null
   lastResult: ActResult | null
@@ -189,7 +189,7 @@ export function useNeuralOps(): UseNeuralOps {
 
       if (result.ok) {
         const actor = from.replace(/^agent\./, '')
-        if (result.approval) {
+        if (result.approval && result.approval.status === 'pending' && !result.stateChanged) {
           toast.warning(`🛡️ Approval required`, {
             description: `${actor} · ${type} → approval ${result.approval.id} pending (${result.approval.approver})`,
           })

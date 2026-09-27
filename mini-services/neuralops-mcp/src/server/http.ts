@@ -1,161 +1,223 @@
-// HTTP REST API — the door the Protocol Inspector (and future MCP-over-HTTP
-// adapter) walks through. Same handlers power the MCP tool surface.
+// HTTP REST door. The Protocol Inspector, the MCP stdio proxy and any
+// HTTP-speaking agent all come through here. Same handlers as the MCP tools.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Config } from '../config.js'
 import { store } from '../state/store.js'
 import { processAct } from '../engines/task-manager.js'
 import {
   getCompactedContext,
-  getFullContext,
   getContextComparison,
-  getEvidenceById,
   getDecisionById,
-  TOOL_DEFS,
-  callTool,
-  actFamilies,
-} from '../mcp/tools.js'
-import type { ActInput } from '../protocol/envelope.js'
-import { seedDemo } from '../seed/demo.js'
+  getEvidenceById,
+  getFullContext,
+  getInbox,
+} from '../engines/context.js'
+import { approverFor } from '../engines/authority.js'
+import { demoToken, registerAgent } from '../engines/agents.js'
+import { genesis, verifyIntegrity } from '../engines/replay.js'
+import { TOOL_DEFS, callTool, type Caller } from '../mcp/tools.js'
 import { ACT_FAMILY, FAMILY_COLOR, FAMILY_DESCRIPTION } from '../protocol/act-types.js'
+import { HTTP_STATUS, NeuralOpsError, forbidden, notFound } from '../errors.js'
+import { bearer, resolveCaller } from './identity.js'
 
-function send(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,X-Agent-Id',
-  })
-  res.end(JSON.stringify(body))
-}
+const MAX_BODY = 256 * 1024
 
-function readBody(req: IncomingMessage): Promise<any> {
-  return new Promise((resolve) => {
-    let data = ''
-    req.on('data', (chunk) => (data += chunk))
+class BodyTooLarge extends Error {}
+
+function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    let tooLarge = false
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => {
+      if (tooLarge) return // drain without buffering
+      size += c.length
+      if (size > MAX_BODY) {
+        tooLarge = true
+        chunks.length = 0
+        return
+      }
+      chunks.push(c)
+    })
     req.on('end', () => {
+      if (tooLarge) return reject(new BodyTooLarge())
+      const text = Buffer.concat(chunks).toString('utf8')
+      if (!text) return resolve({})
       try {
-        resolve(data ? JSON.parse(data) : {})
+        const v = JSON.parse(text)
+        resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {})
       } catch {
-        resolve({})
+        reject(new NeuralOpsError('invalid', 'Body is not valid JSON'))
       }
     })
+    req.on('error', reject)
   })
 }
 
-export async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method === 'OPTIONS') {
-    send(res, 204, {})
-    return
-  }
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const path = url.pathname
-  const method = req.method || 'GET'
-
-  try {
-    // ---- GET routes ----
-    if (method === 'GET') {
-      if (path === '/api/state') {
-        return send(res, 200, snapshotState())
-      }
-      if (path === '/api/agents') {
-        return send(res, 200, Array.from(store.agents.values()))
-      }
-      if (path === '/api/tasks') {
-        return send(res, 200, Array.from(store.tasks.values()))
-      }
-      if (path === '/api/ledger') {
-        const limit = parseInt(url.searchParams.get('limit') || '100', 10)
-        const taskId = url.searchParams.get('taskId') || undefined
-        const events = taskId
-          ? store.ledger.filter((e) => e.taskId === taskId)
-          : store.ledger
-        return send(res, 200, events.slice(-limit).reverse())
-      }
-      if (path === '/api/approvals') {
-        return send(res, 200, Array.from(store.approvals.values()))
-      }
-      if (path === '/api/tools') {
-        return send(res, 200, TOOL_DEFS)
-      }
-      if (path === '/api/families') {
-        return send(res, 200, {
-          family: ACT_FAMILY,
-          color: FAMILY_COLOR,
-          description: FAMILY_DESCRIPTION,
-        })
-      }
-      const taskCtxMatch = path.match(/^\/api\/tasks\/([^/]+)\/context\/comparison$/)
-      if (taskCtxMatch) {
-        return send(res, 200, getContextComparison(taskCtxMatch[1]))
-      }
-      const taskFullMatch = path.match(/^\/api\/tasks\/([^/]+)\/context\/full$/)
-      if (taskFullMatch) {
-        return send(res, 200, getFullContext(taskFullMatch[1]))
-      }
-      const taskContextMatch = path.match(/^\/api\/tasks\/([^/]+)\/context$/)
-      if (taskContextMatch) {
-        return send(res, 200, getCompactedContext(taskContextMatch[1]))
-      }
-      const taskMatch = path.match(/^\/api\/tasks\/([^/]+)$/)
-      if (taskMatch) {
-        const t = store.tasks.get(taskMatch[1])
-        if (!t) return send(res, 404, { error: 'Task not found' })
-        return send(res, 200, {
-          task: t,
-          decisions: store.decisionsForTask(t.id),
-          evidence: store.evidenceForTask(t.id),
-          ledger: store.ledgerForTask(t.id).slice(-50).reverse(),
-        })
-      }
-      if (path === '/api/evidence' && url.searchParams.get('id')) {
-        return send(res, 200, getEvidenceById(url.searchParams.get('id')!))
-      }
-      if (path === '/api/decisions' && url.searchParams.get('id')) {
-        return send(res, 200, getDecisionById(url.searchParams.get('id')!))
-      }
-      return send(res, 404, { error: 'Not found', path })
-    }
-
-    // ---- POST routes ----
-    if (method === 'POST') {
-      if (path === '/api/acts') {
-        const body = (await readBody(req)) as ActInput
-        const result = processAct(body)
-        return send(res, result.ok ? 200 : 400, result)
-      }
-      const toolMatch = path.match(/^\/api\/tools\/([a-zA-Z_]+)$/)
-      if (toolMatch) {
-        const toolName = toolMatch[1]
-        const args = await readBody(req)
-        const caller = (req.headers['x-agent-id'] as string) || (args._agent as string) || 'agent.architect'
-        const { _agent, ...rest } = args
-        const result = callTool(toolName, rest, caller)
-        return send(res, result.ok ? 200 : 400, result)
-      }
-      if (path === '/api/demo/seed') {
-        seedDemo()
-        return send(res, 200, { ok: true, state: snapshotState() })
-      }
-      if (path === '/api/demo/reset') {
-        store.reset()
-        return send(res, 200, { ok: true })
-      }
-      return send(res, 404, { error: 'Not found', path })
-    }
-
-    return send(res, 405, { error: 'Method not allowed' })
-  } catch (e) {
-    return send(res, 500, { error: (e as Error).message })
+export function snapshotState(config?: Pick<Config, 'mode'>) {
+  return {
+    mode: config?.mode ?? 'demo',
+    workspace: [...store.workspaces.values()][0] ?? null,
+    agents: [...store.agents.values()].map((a) => ({ ...a, approverFor: approverFor(a.id) })),
+    tasks: [...store.tasks.values()],
+    approvals: [...store.approvals.values()],
+    policies: [...store.policies.values()],
+    ledger: store.ledger.slice(-50).reverse(),
+    ledgerTotal: store.ledger.length,
+    ledgerHead: store.ledgerHead,
   }
 }
 
-export function snapshotState() {
-  return {
-    workspace: Array.from(store.workspaces.values())[0] || null,
-    agents: Array.from(store.agents.values()),
-    tasks: Array.from(store.tasks.values()),
-    approvals: Array.from(store.approvals.values()),
-    ledger: store.ledger.slice(-50).reverse(),
-    ledgerTotal: store.ledger.length,
+export function createHttpHandler(config: Config) {
+  function send(res: ServerResponse, status: number, body: unknown) {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (config.corsOrigin) {
+      headers['Access-Control-Allow-Origin'] = config.corsOrigin
+      headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+      headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Agent-Id'
+    }
+    res.writeHead(status, headers)
+    res.end(status === 204 ? undefined : JSON.stringify(body))
+  }
+
+  const fail = (res: ServerResponse, e: unknown) => {
+    if (e instanceof BodyTooLarge) return send(res, 413, { ok: false, error: 'Body too large', errorCode: 'too_large' })
+    if (e instanceof NeuralOpsError) return send(res, HTTP_STATUS[e.code], { ok: false, error: e.message, errorCode: e.code })
+    console.error('[neuralops] unhandled', e)
+    return send(res, 500, { ok: false, error: 'Internal error' })
+  }
+
+  const header = (req: IncomingMessage, name: string) => {
+    const v = req.headers[name]
+    return (Array.isArray(v) ? v[0] : v) || null
+  }
+
+  function callerFor(req: IncomingMessage, claimed: string | null): Caller {
+    return resolveCaller(config, bearer(req.headers.authorization), claimed)
+  }
+
+  function requireDemo(caller: Caller) {
+    if (config.mode !== 'demo') throw notFound('Demo endpoints are disabled in secure mode')
+    void caller
+  }
+
+  return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'OPTIONS') return send(res, 204, null)
+    const url = new URL(req.url || '/', 'http://localhost')
+    const path = url.pathname
+    const method = req.method || 'GET'
+
+    try {
+      if (method === 'GET' && path === '/api/health') {
+        return send(res, 200, { ok: true, mode: config.mode, ledgerLength: store.ledger.length })
+      }
+
+      if (method === 'GET') {
+        const caller = callerFor(req, header(req, 'x-agent-id'))
+        const q = (k: string) => url.searchParams.get(k)
+
+        if (path === '/api/state') return send(res, 200, snapshotState(config))
+        if (path === '/api/agents') return send(res, 200, snapshotState(config).agents)
+        if (path === '/api/tasks') return send(res, 200, [...store.tasks.values()])
+        if (path === '/api/approvals') return send(res, 200, [...store.approvals.values()])
+        if (path === '/api/policies') return send(res, 200, [...store.policies.values()])
+        if (path === '/api/tools') return send(res, 200, TOOL_DEFS)
+        if (path === '/api/families') {
+          return send(res, 200, { family: ACT_FAMILY, color: FAMILY_COLOR, description: FAMILY_DESCRIPTION })
+        }
+        if (path === '/api/ledger') {
+          const limit = Math.min(Math.max(parseInt(q('limit') || '100', 10) || 100, 1), 1000)
+          const taskId = q('taskId')
+          const events = taskId ? store.ledgerForTask(taskId) : store.ledger
+          return send(res, 200, events.slice(-limit).reverse())
+        }
+        if (path === '/api/integrity') return send(res, 200, verifyIntegrity())
+        if (path === '/api/whoami') {
+          return send(res, 200, {
+            agent: caller.agentId ? store.agents.get(caller.agentId) ?? null : null,
+            via: caller.via,
+            isAdmin: caller.isAdmin,
+            mode: config.mode,
+          })
+        }
+        if (path === '/api/inbox') {
+          if (!caller.agentId) throw forbidden('Inbox needs an agent identity')
+          return send(res, 200, getInbox(caller.agentId))
+        }
+        if (path === '/api/evidence' && q('id')) return send(res, 200, getEvidenceById(q('id')!))
+        if (path === '/api/decisions' && q('id')) return send(res, 200, getDecisionById(q('id')!))
+        if (path === '/api/demo/tokens') {
+          requireDemo(caller)
+          return send(res, 200, Object.fromEntries([...store.agents.keys()].map((id) => [id, demoToken(id)])))
+        }
+
+        let m = path.match(/^\/api\/tasks\/([^/]+)\/context\/comparison$/)
+        if (m) return send(res, 200, getContextComparison(decodeURIComponent(m[1])))
+        m = path.match(/^\/api\/tasks\/([^/]+)\/context\/full$/)
+        if (m) return send(res, 200, getFullContext(decodeURIComponent(m[1])))
+        m = path.match(/^\/api\/tasks\/([^/]+)\/context$/)
+        if (m) return send(res, 200, getCompactedContext(decodeURIComponent(m[1])))
+        m = path.match(/^\/api\/tasks\/([^/]+)$/)
+        if (m) {
+          const t = store.tasks.get(decodeURIComponent(m[1]))
+          if (!t) throw notFound('Task not found')
+          return send(res, 200, {
+            task: t,
+            decisions: store.decisionsForTask(t.id),
+            evidence: store.evidenceForTask(t.id),
+            approvals: store.approvalsForTask(t.id),
+            ledger: store.ledgerForTask(t.id).slice(-50).reverse(),
+          })
+        }
+        throw notFound(`No route GET ${path}`)
+      }
+
+      if (method === 'POST') {
+        const body = await readBody(req)
+        const claimed = header(req, 'x-agent-id') ?? (typeof body.from === 'string' ? body.from : null)
+
+        if (path === '/api/acts') {
+          const caller = callerFor(req, claimed)
+          if (!caller.agentId) throw forbidden('Acts need an agent identity (bearer token, or `from` in demo mode)')
+          const result = processAct({ ...body, from: caller.agentId }, { via: caller.via })
+          return send(res, result.ok ? 200 : HTTP_STATUS[result.errorCode ?? 'invalid'], result)
+        }
+
+        const toolMatch = path.match(/^\/api\/tools\/([a-zA-Z_]+)$/)
+        if (toolMatch) {
+          const { _agent, from: _from, ...args } = body
+          const claimedTool =
+            header(req, 'x-agent-id') ??
+            (typeof _agent === 'string' ? _agent : typeof _from === 'string' ? _from : null)
+          const caller = callerFor(req, claimedTool)
+          const result = callTool(toolMatch[1], args, caller)
+          return send(res, result.ok ? 200 : HTTP_STATUS[result.errorCode ?? 'invalid'], result)
+        }
+
+        if (path === '/api/agents') {
+          const caller = callerFor(req, null)
+          if (config.mode === 'secure' && !caller.isAdmin) throw forbidden('Registering agents needs the admin token')
+          const { agent, token } = registerAgent(body, { asAdmin: caller.isAdmin })
+          return send(res, 201, { ok: true, agent, token })
+        }
+
+        if (path === '/api/demo/seed') {
+          requireDemo(callerFor(req, null))
+          genesis('demo')
+          return send(res, 200, { ok: true, state: snapshotState(config) })
+        }
+        if (path === '/api/demo/reset') {
+          requireDemo(callerFor(req, null))
+          genesis('empty')
+          return send(res, 200, { ok: true, state: snapshotState(config) })
+        }
+        throw notFound(`No route POST ${path}`)
+      }
+
+      return send(res, 405, { ok: false, error: 'Method not allowed' })
+    } catch (e) {
+      return fail(res, e)
+    }
   }
 }

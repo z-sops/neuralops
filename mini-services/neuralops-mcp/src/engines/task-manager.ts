@@ -1,307 +1,447 @@
 // Task Manager — the act dispatcher.
 //
-// This is the heart of the Coordination Core. It:
-//   1. Validates the act envelope + typed payload.
-//   2. Looks up current state (BEFORE).
-//   3. Checks authority (may create an Approval and short-circuit).
-//   4. Mutates state (produces AFTER).
-//   5. Appends an immutable LedgerEvent capturing the state delta.
+// processAct():
+//   1. Validates the envelope (ActSchema) and the typed payload (PAYLOAD_SCHEMAS).
+//   2. Verifies the actor is a registered agent.
+//   3. Runs the handler. Handlers check EVERY precondition before mutating
+//      anything, so a rejected act leaves no trace (counters are restored too).
+//   4. Appends a hash-chained LedgerEvent for each state change.
+//   5. Journals the accepted act — the journal is the source of truth.
 //
 // Acts mutate state. Messages never become the state.
 
 import { store } from '../state/store.js'
-import { makeId, type Act } from '../protocol/envelope.js'
+import { ActSchema, type Act, type ActVia } from '../protocol/envelope.js'
 import type { ActType } from '../protocol/act-types.js'
-import type { LedgerEvent, Task } from '../state/types.js'
 import {
-  AcceptHandoffPayload,
-  AckPayload,
-  AnswerPayload,
-  AuthorizePayload,
-  BlockPayload,
-  ClaimPayload,
-  CompletePayload,
-  CounterPayload,
-  DecisionPayload,
-  DenyPayload,
-  EscalatePayload,
-  EvidencePayload,
-  HandoffPayload,
-  ProposalPayload,
-  QuestionPayload,
-  ReleasePayload,
-  StatusPayload,
-  SubscribePayload,
-  UnsubscribePayload,
-  UpdatePayload,
+  PAYLOAD_SCHEMAS,
+  formatZodError,
+  type PayloadOf,
 } from '../protocol/payloads.js'
+import type { Approval, Gate, LedgerEvent, Task, TaskStatus } from '../state/types.js'
 import {
-  hasAuthority,
-  hasApprovedApproval,
-  requestApproval,
+  NeuralOpsError,
+  conflict,
+  forbidden,
+  invalid,
+  notFound,
+  type ErrorCode,
+} from '../errors.js'
+import {
   authorize as authorizeApproval,
+  consumeApproval,
+  createApproval,
   deny as denyApproval,
+  findConsumableApproval,
+  findPendingApproval,
+  hasAuthority,
+  hasWildcard,
+  isAbove,
+  policyFor,
 } from './authority.js'
-import { ACT_FAMILY } from '../protocol/act-types.js'
 
 export interface ActResult {
   ok: boolean
-  act: Act
+  act: Act | null
   ledgerEvent: LedgerEvent | null
-  approval: import('../state/types.js').Approval | null
-  error?: string
+  approval: Approval | null
   stateChanged: boolean
   task?: Task
+  message?: string
+  error?: string
+  errorCode?: ErrorCode
 }
 
-function snapshot(task: Task | undefined): Record<string, unknown> {
-  if (!task) return {}
-  const { ...rest } = task
-  return JSON.parse(JSON.stringify(rest))
+export interface ProcessOptions {
+  via?: ActVia
+  /** Replaying a journaled act: keep its id/timestamp/seq, skip journaling side-effects. */
+  replay?: boolean
+  now?: string
 }
 
-function recordLedger(
+type HandlerOut = Omit<ActResult, 'ok' | 'act'>
+type Handler<T extends ActType> = (act: Act, p: PayloadOf<T>) => HandlerOut
+
+const DEFAULT_TTL_SECONDS = 3600
+const clone = <T>(v: T): T => structuredClone(v)
+
+// ---------------------------------------------------------------- helpers
+
+function record(
   act: Act,
-  task: Task | undefined,
+  task: Task | null,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   deltaSummary: string,
-  references: string[]
+  references: string[] = []
 ): LedgerEvent {
-  const event: LedgerEvent = {
-    id: store.newId('evt'),
-    seq: store.nextSeq(),
-    workspaceId:
-      (task && task.workspaceId) ||
-      store.agents.get(act.from)?.workspaceId ||
-      'ws_engineering',
+  return store.appendLedger({
+    workspaceId: task?.workspaceId ?? store.agents.get(act.from)?.workspaceId ?? 'ws_engineering',
     actId: act.id,
-    actType: act.type as ActType,
+    actType: act.type,
     actor: act.from,
-    taskId: task?.id || act.taskId || null,
-    intent: act.intent || null,
-    before,
-    after,
-    references,
+    via: act.via,
+    taskId: task?.id ?? act.taskId ?? null,
+    intent: act.intent ?? null,
+    before: clone(before),
+    after: clone(after),
+    references: [...new Set([...act.references, ...references])].filter(Boolean),
     deltaSummary,
     timestamp: act.timestamp,
-  }
-  store.appendLedger(event)
-  return event
+  })
 }
 
-function fail(act: Act, error: string): ActResult {
-  return {
-    ok: false,
-    act,
-    ledgerEvent: null,
-    approval: null,
-    error,
-    stateChanged: false,
-  }
-}
-
-function getTask(act: Act): Task {
-  const taskId = act.taskId
-  if (!taskId) throw new Error('taskId required for this act')
+function requireTask(taskId: string): Task {
   const task = store.tasks.get(taskId)
-  if (!task) throw new Error(`Task ${taskId} not found`)
+  if (!task) throw notFound(`Task ${taskId} not found`)
   return task
 }
 
-function getAgent(act: Act) {
-  const agent = store.agents.get(act.from)
-  if (!agent) throw new Error(`Agent ${act.from} not found`)
-  return agent
+function requireOwner(task: Task, agentId: string, verb: string): void {
+  if (task.assignee !== agentId) {
+    throw forbidden(
+      `Only the current owner can ${verb} ${task.id}. Owner is ${task.assignee ?? '(nobody)'}.`
+    )
+  }
 }
 
-// ---- the dispatcher ----
-export function processAct(input: import('../protocol/envelope.js').ActInput): ActResult {
-  // Finalize envelope
-  const act: Act = {
-    ...input,
-    id: input.id || makeId('act'),
-    timestamp: new Date().toISOString(),
-    seq: store.nextSeq(),
+function requireNoPendingHandoff(task: Task, verb: string): void {
+  if (task.status === 'handoff_pending') {
+    throw conflict(
+      `Cannot ${verb} ${task.id} while a handoff to ${task.pendingHandoffTo} is pending. Wait for accept/reject, or release the task.`
+    )
   }
-  // Normalize: most acts carry taskId in their payload. Promote it to the
-  // envelope's top-level taskId so handlers (and the ledger) can rely on a
-  // single field regardless of where the caller put it.
-  if (!act.taskId && act.payload && typeof act.payload.taskId === 'string') {
-    act.taskId = act.payload.taskId as string
+}
+
+function requireOpen(task: Task, verb: string): void {
+  if (task.status === 'completed' || task.status === 'failed') {
+    throw conflict(`Cannot ${verb} ${task.id}: task is ${task.status}.`)
   }
-  // Ensure array/object fields always exist (zod defaults aren't applied
-  // because we spread the raw input rather than parsing through ActSchema).
-  if (!Array.isArray(act.references)) act.references = []
-  if (!act.payload || typeof act.payload !== 'object') act.payload = {}
-  store.acts.set(act.id, act)
+}
+
+function canGovern(agentId: string): boolean {
+  return hasAuthority(agentId, 'govern', '*')
+}
+
+/** Owner, anyone above the owner, governors, or the creator of an unassigned task. */
+function canManage(agentId: string, task: Task): boolean {
+  if (task.assignee === agentId) return true
+  if (task.assignee && isAbove(agentId, task.assignee)) return true
+  if (!task.assignee && task.createdBy === agentId) return true
+  return hasWildcard(agentId) || canGovern(agentId)
+}
+
+function requireAgent(id: string, what = 'Agent'): void {
+  if (!store.agents.has(id)) throw notFound(`${what} ${id} not found`)
+}
+
+/** "agent.x" must exist; "role:x" must match at least one agent's role. */
+function requireTarget(to: string): void {
+  if (to.startsWith('role:')) {
+    const role = to.slice(5)
+    if (![...store.agents.values()].some((a) => a.role === role)) {
+      throw notFound(`No agent has role "${role}"`)
+    }
+    return
+  }
+  requireAgent(to, 'Target agent')
+}
+
+function isRecipient(agentId: string, to: string): boolean {
+  if (to === agentId) return true
+  if (to.startsWith('role:')) return store.agents.get(agentId)?.role === to.slice(5)
+  return false
+}
+
+function addSubscription(agentId: string, target: string): boolean {
+  const agent = store.agents.get(agentId)
+  if (!agent || agent.subscriptions.includes(target)) return false
+  agent.subscriptions.push(target)
+  return true
+}
+
+function removeSubscription(agentId: string, target: string): boolean {
+  const agent = store.agents.get(agentId)
+  if (!agent || !agent.subscriptions.includes(target)) return false
+  agent.subscriptions = agent.subscriptions.filter((s) => s !== target)
+  return true
+}
+
+function addSeconds(iso: string, seconds: number): string {
+  return new Date(new Date(iso).getTime() + seconds * 1000).toISOString()
+}
+
+function taskView(task: Task): Task {
+  return clone(task)
+}
+
+const gateKey = (g: Gate) => `${g.action}/${g.scope}`
+
+// ---------------------------------------------------------------- dispatcher
+
+export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult {
+  const parsed = ActSchema.safeParse(input)
+  if (!parsed.success) {
+    return {
+      ok: false,
+      act: null,
+      ledgerEvent: null,
+      approval: null,
+      stateChanged: false,
+      error: `Invalid act envelope — ${formatZodError(parsed.error)}`,
+      errorCode: 'invalid',
+    }
+  }
+  const env = parsed.data
+
+  // Counters are restored if the act is rejected, so rejected acts leave no
+  // trace and replay stays deterministic.
+  const saved = store.exportCounters()
+
+  let act: Act
+  if (opts.replay) {
+    const r = input as Partial<Act>
+    act = {
+      ...env,
+      id: r.id!,
+      timestamp: r.timestamp!,
+      seq: r.seq!,
+      via: r.via ?? 'system',
+    }
+    store.setActSeq(act.seq)
+  } else {
+    if (env.id && store.acts.has(env.id)) {
+      return {
+        ok: false,
+        act: null,
+        ledgerEvent: null,
+        approval: null,
+        stateChanged: false,
+        error: `Duplicate act id ${env.id} — this act was already processed`,
+        errorCode: 'conflict',
+      }
+    }
+    const seq = store.nextActSeq()
+    act = {
+      ...env,
+      id: env.id ?? `act_${String(seq).padStart(6, '0')}`,
+      timestamp: opts.now ?? new Date().toISOString(),
+      seq,
+      via: opts.via ?? 'impersonated',
+    }
+  }
 
   try {
-    switch (act.type) {
-      case 'claim':
-        return handleClaim(act)
-      case 'release':
-        return handleRelease(act)
-      case 'complete':
-        return handleComplete(act)
-      case 'block':
-        return handleBlock(act)
-      case 'status':
-        return handleStatus(act)
-      case 'handoff':
-        return handleHandoff(act)
-      case 'accept_handoff':
-        return handleAcceptHandoff(act)
-      case 'reject_handoff':
-        return handleRejectHandoff(act)
-      case 'evidence':
-        return handleEvidence(act)
-      case 'decision':
-        return handleDecision(act)
-      case 'update':
-        return handleUpdate(act)
-      case 'question':
-        return handleQuestion(act)
-      case 'answer':
-        return handleAnswer(act)
-      case 'proposal':
-        return handleProposal(act)
-      case 'counter':
-        return handleCounter(act)
-      case 'request_approval':
-        return handleRequestApproval(act)
-      case 'authorize':
-        return handleAuthorize(act)
-      case 'deny':
-        return handleDeny(act)
-      case 'escalate':
-        return handleEscalate(act)
-      case 'subscribe':
-        return handleSubscribe(act)
-      case 'unsubscribe':
-        return handleUnsubscribe(act)
-      case 'ack':
-        return handleAck(act)
-      default:
-        return fail(act, `Unknown act type: ${act.type as string}`)
+    if (!store.agents.has(act.from)) {
+      throw forbidden(`Unknown agent ${act.from}. Register the agent before it can act.`)
     }
+    const schema = PAYLOAD_SCHEMAS[act.type]
+    const pr = schema.safeParse(act.payload)
+    if (!pr.success) throw invalid(`Invalid ${act.type} payload — ${formatZodError(pr.error)}`)
+    const payload = pr.data as Record<string, unknown>
+    act.payload = payload
+
+    // Normalize taskId: payload is authoritative; envelope must agree if set.
+    if (typeof payload.taskId === 'string') {
+      if (act.taskId && act.taskId !== payload.taskId) {
+        throw invalid(`Envelope taskId ${act.taskId} ≠ payload taskId ${payload.taskId}`)
+      }
+      act.taskId = payload.taskId
+    }
+
+    const out = dispatch(act, payload)
+    store.acts.set(act.id, act)
+    store.journalAppend({ k: 'act', act: clone(act) })
+    return { ok: true, act, ...out }
   } catch (e) {
-    return fail(act, (e as Error).message)
+    store.restoreCounters(saved)
+    const err =
+      e instanceof NeuralOpsError ? e : new NeuralOpsError('invalid', (e as Error).message)
+    return {
+      ok: false,
+      act,
+      ledgerEvent: null,
+      approval: null,
+      stateChanged: false,
+      error: err.message,
+      errorCode: err.code,
+    }
   }
 }
 
-// ============ task family ============
+function dispatch(act: Act, p: Record<string, unknown>): HandlerOut {
+  const h = HANDLERS[act.type] as Handler<ActType>
+  return h(act, p as never)
+}
 
-function handleClaim(act: Act): ActResult {
-  const p = ClaimPayload.parse(act.payload)
-  const task = store.tasks.get(p.taskId)
-  if (!task) return fail(act, `Task ${p.taskId} not found`)
-  if (task.status === 'completed' || task.status === 'failed')
-    return fail(act, `Task is ${task.status}`)
-  if (task.assignee && task.assignee !== act.from)
-    return fail(
-      act,
-      `Task already claimed by ${task.assignee}. Use handoff instead.`
-    )
-  if (task.pendingHandoffTo && task.pendingHandoffTo !== act.from)
-    return fail(
-      act,
-      `Task is pending handoff to ${task.pendingHandoffTo}.`
-    )
+// ---------------------------------------------------------------- task family
 
-  const before = snapshot(task)
+const handleCreateTask: Handler<'create_task'> = (act, p) => {
+  const id = p.id ?? store.nextId('task', (x) => store.tasks.has(x))
+  if (store.tasks.has(id)) throw conflict(`Task ${id} already exists`)
+  const agent = store.agents.get(act.from)!
+  const task: Task = {
+    id,
+    workspaceId: agent.workspaceId,
+    title: p.title,
+    objective: p.objective,
+    status: 'unclaimed',
+    assignee: null,
+    claims: [],
+    handoffs: [],
+    decisionIds: [],
+    evidenceIds: [],
+    constraints: p.constraints ?? [],
+    openItems: p.openItems ?? [],
+    nextSteps: p.nextSteps ?? [],
+    gates: dedupeGates(p.gates ?? []),
+    resultRef: null,
+    progress: 0,
+    eta: null,
+    blockedReason: null,
+    pendingHandoffTo: null,
+    escalatedTo: null,
+    createdBy: act.from,
+    createdAt: act.timestamp,
+    updatedAt: act.timestamp,
+  }
+  store.tasks.set(id, task)
+  addSubscription(act.from, id)
+  act.taskId = id
+  const evt = record(act, task, {}, { status: 'unclaimed', title: task.title, gates: task.gates }, `${act.from} created task ${id}: ${task.title}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
+
+function dedupeGates(gates: Gate[]): Gate[] {
+  const seen = new Map<string, Gate>()
+  for (const g of gates) seen.set(gateKey(g), { action: g.action, scope: g.scope })
+  return [...seen.values()].sort((a, b) => gateKey(a).localeCompare(gateKey(b)))
+}
+
+const handleClaim: Handler<'claim'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'claim')
+  requireNoPendingHandoff(task, 'claim')
+
+  const isOwner = task.assignee === act.from
+  const isEscalationTarget = task.escalatedTo === act.from
+  if (task.assignee && !isOwner && !isEscalationTarget) {
+    throw conflict(`Task ${task.id} is owned by ${task.assignee}. Ask for a handoff instead.`)
+  }
+  if (isOwner && task.status === 'in_progress') {
+    throw conflict(`${act.from} already owns ${task.id} and it is in progress.`)
+  }
+
+  const before = { status: task.status, assignee: task.assignee, blockedReason: task.blockedReason }
   task.assignee = act.from
   task.status = 'in_progress'
-  task.pendingHandoffTo = null
   task.blockedReason = null
-  task.claims.push({
-    agentId: act.from,
-    timestamp: act.timestamp,
-    note: p.note,
-  })
+  task.escalatedTo = null
+  task.claims.push({ agentId: act.from, timestamp: act.timestamp, ...(p.note ? { note: p.note } : {}) })
   task.updatedAt = act.timestamp
-  // auto-subscribe claimer
-  subscribeTo(act.from, p.taskId)
+  addSubscription(act.from, task.id)
 
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status, assignee: before.assignee },
-    { status: task.status, assignee: task.assignee },
-    `${act.from} claimed task ${p.taskId}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  const how = isOwner ? 're-claimed (unblocked)' : before.assignee ? `took over from ${before.assignee}` : 'claimed'
+  const evt = record(act, task, before, { status: task.status, assignee: task.assignee, blockedReason: null }, `${act.from} ${how} task ${task.id}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleRelease(act: Act): ActResult {
-  const p = ReleasePayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.assignee !== act.from)
-    return fail(act, `Only the current owner can release. Owner is ${task.assignee}`)
-  const before = snapshot(task)
+const handleRelease: Handler<'release'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'release')
+  requireOwner(task, act.from, 'release')
+  const before = { status: task.status, assignee: task.assignee, pendingHandoffTo: task.pendingHandoffTo }
+  if (task.pendingHandoffTo) {
+    const ho = pendingHandoff(task)
+    if (ho) {
+      ho.accepted = false
+      ho.rejectedReason = `cancelled: owner released the task (${p.reason})`
+    }
+    task.pendingHandoffTo = null
+  }
   task.assignee = null
   task.status = 'unclaimed'
+  task.blockedReason = null
   task.updatedAt = act.timestamp
-  unsubscribeFrom(act.from, p.taskId)
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status, assignee: before.assignee },
-    { status: task.status, assignee: task.assignee },
-    `${act.from} released task ${p.taskId}: ${p.reason}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  removeSubscription(act.from, task.id)
+  const evt = record(act, task, before, { status: task.status, assignee: null, pendingHandoffTo: null }, `${act.from} released task ${task.id}: ${p.reason}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleComplete(act: Act): ActResult {
-  const p = CompletePayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.assignee !== act.from)
-    return fail(act, `Only the current owner can complete. Owner is ${task.assignee}`)
+// Scopes a completion touches: task gates on "complete", the declared scope,
+// and — conservatively — production if the evidence/resultRef says so.
+// Inference can only ADD gates, never remove them.
+function completionScopes(task: Task, p: PayloadOf<'complete'>): string[] {
+  const scopes = new Set<string>()
+  for (const g of task.gates) if (g.action === 'complete' || g.action === '*') scopes.add(g.scope)
+  if (p.scope) scopes.add(p.scope)
+  const looksProduction =
+    (p.evidence ?? []).some((e) => e.type === 'deploy') ||
+    /\bprod(uction)?\b|^prod(uction)?:/i.test(p.resultRef ?? '')
+  if (looksProduction) scopes.add('production')
+  return [...scopes]
+    .filter((s) => task.gates.some((g) => g.scope === s) || policyFor('complete', s) !== null)
+    .sort()
+}
 
-  // Authority check: "complete" with a deploy/production scope requires approval.
-  // We infer this from evidence type "deploy" or resultRef containing "production".
-  const isDeploy =
-    p.evidence?.some((e) => e.type === 'deploy') ||
-    (p.resultRef || '').includes('production')
+const handleComplete: Handler<'complete'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'complete')
+  requireOwner(task, act.from, 'complete')
+  requireNoPendingHandoff(task, 'complete')
+  if (task.status === 'blocked') {
+    throw conflict(`Task ${task.id} is blocked (${task.blockedReason}). Re-claim it to unblock first.`)
+  }
 
-  if (isDeploy && !hasAuthority(act.from, 'complete', 'production') && !hasApprovedApproval(act.from, 'complete', 'production', p.taskId)) {
-    // Create approval request, do NOT complete yet.
-    const approval = requestApproval(
-      act.from,
-      'complete',
-      'production',
-      p.taskId,
-      act.references
-    )
-    recordLedger(
+  // ---- authority gate ----
+  const toConsume: Approval[] = []
+  for (const scope of completionScopes(task, p)) {
+    if (hasAuthority(act.from, 'complete', scope)) continue
+    const granted = findConsumableApproval(act.from, 'complete', scope, task.id)
+    if (granted) {
+      toConsume.push(granted)
+      continue
+    }
+    const existing = findPendingApproval(act.from, 'complete', scope, task.id)
+    if (existing) {
+      return {
+        ledgerEvent: null,
+        approval: existing,
+        stateChanged: false,
+        task: taskView(task),
+        message: `Approval ${existing.id} is still pending with ${existing.approver}.`,
+      }
+    }
+    const approval = createApproval({
+      requestedBy: act.from,
+      action: 'complete',
+      scope,
+      taskId: task.id,
+      references: act.references,
+      at: act.timestamp,
+    })
+    const evt = record(
       act,
       task,
       { status: task.status },
       { status: task.status, pendingApproval: approval.id },
-      `${act.from} requested approval to complete (deploy) task ${p.taskId} → approval ${approval.id}`,
-      [...act.references, approval.id]
+      `${act.from} tried to complete ${task.id} (${scope}) → approval ${approval.id} required from ${approval.approver}`,
+      [approval.id]
     )
     return {
-      ok: true,
-      act,
-      ledgerEvent: null,
+      ledgerEvent: evt,
       approval,
       stateChanged: false,
-      task,
+      task: taskView(task),
+      message: `Gated: ${scope}. Approval ${approval.id} requested from ${approval.approver}. Retry complete after it is authorized.`,
     }
   }
 
-  const before = snapshot(task)
-  task.status = 'completed'
-  task.resultRef = p.resultRef || p.summary
-  task.progress = 100
-  task.assignee = act.from
-  // attach evidence
-  for (const e of p.evidence || []) {
-    const id = store.newId('evidence')
+  // ---- complete ----
+  const before = { status: task.status, resultRef: task.resultRef, progress: task.progress }
+  const evidenceIds: string[] = []
+  for (const e of p.evidence ?? []) {
+    const id = store.nextId('evidence', (x) => store.evidence.has(x))
     store.evidence.set(id, {
       id,
       taskId: task.id,
@@ -309,153 +449,140 @@ function handleComplete(act: Act): ActResult {
       summary: e.summary,
       ref: e.ref,
       producedBy: act.from,
-      references: act.references,
+      references: [...act.references],
       timestamp: act.timestamp,
     })
     task.evidenceIds.push(id)
+    evidenceIds.push(id)
   }
-  // move open→done by clearing nextSteps that were the completion
+  for (const a of toConsume) consumeApproval(a, act.id, act.timestamp)
+  task.status = 'completed'
+  task.resultRef = p.resultRef ?? p.summary
+  task.progress = 100
+  task.eta = null
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status, resultRef: before.resultRef, progress: before.progress },
-    { status: task.status, resultRef: task.resultRef, progress: task.progress },
-    `${act.from} completed task ${p.taskId}: ${p.summary}`,
-    [...act.references, ...(p.evidence || []).map(() => '')]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
-}
-
-function handleBlock(act: Act): ActResult {
-  const p = BlockPayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.assignee !== act.from)
-    return fail(act, `Only the current owner can block.`)
-  const before = snapshot(task)
-  task.status = 'blocked'
-  task.blockedReason = p.reason
-  task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status },
-    { status: task.status, blockedReason: task.blockedReason },
-    `${act.from} blocked task ${p.taskId}: ${p.reason}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
-}
-
-function handleStatus(act: Act): ActResult {
-  const p = StatusPayload.parse(act.payload)
-  const task = getTask(act)
-  const before = { progress: task.progress }
-  task.progress = p.progress
-  if (p.eta) task.nextSteps = [...task.nextSteps, `ETA: ${p.eta}`]
-  task.updatedAt = act.timestamp
-  const evt = recordLedger(
+  const evt = record(
     act,
     task,
     before,
-    { progress: task.progress },
-    `${act.from} status update on ${p.taskId}: ${p.progress}%${p.note ? ' — ' + p.note : ''}`,
-    act.references
+    { status: task.status, resultRef: task.resultRef, progress: 100, consumedApprovals: toConsume.map((a) => a.id) },
+    `${act.from} completed task ${task.id}: ${p.summary}`,
+    [...evidenceIds, ...toConsume.map((a) => a.id)]
   )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  return { ledgerEvent: evt, approval: toConsume[0] ?? null, stateChanged: true, task: taskView(task) }
 }
 
-// ============ handoff family ============
+const handleBlock: Handler<'block'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'block')
+  requireOwner(task, act.from, 'block')
+  requireNoPendingHandoff(task, 'block')
+  if (task.status === 'blocked') throw conflict(`Task ${task.id} is already blocked.`)
+  const before = { status: task.status, blockedReason: task.blockedReason }
+  task.status = 'blocked'
+  task.blockedReason = p.reason
+  task.updatedAt = act.timestamp
+  const evt = record(act, task, before, { status: task.status, blockedReason: p.reason }, `${act.from} blocked task ${task.id}: ${p.reason}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
 
-function handleHandoff(act: Act): ActResult {
-  const p = HandoffPayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.assignee !== act.from)
-    return fail(act, `Only the current owner can hand off.`)
-  const target = store.agents.get(p.to)
-  if (!target) return fail(act, `Target agent ${p.to} not found`)
-  const before = snapshot(task)
-  task.pendingHandoffTo = p.to
-  task.status = 'handoff_pending'
+const handleStatus: Handler<'status'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'report status on')
+  requireOwner(task, act.from, 'report status on')
+  const before = { progress: task.progress, eta: task.eta }
+  task.progress = p.progress
+  if (p.eta !== undefined) task.eta = p.eta
+  task.updatedAt = act.timestamp
+  const evt = record(
+    act,
+    task,
+    before,
+    { progress: task.progress, eta: task.eta },
+    `${act.from} status on ${task.id}: ${p.progress}%${p.eta ? ` (ETA ${p.eta})` : ''}${p.note ? ` — ${p.note}` : ''}`
+  )
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
+
+// ---------------------------------------------------------------- handoff family
+
+function pendingHandoff(task: Task) {
+  return [...task.handoffs].reverse().find((h) => h.to === task.pendingHandoffTo && h.accepted === null)
+}
+
+const handleHandoff: Handler<'handoff'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'hand off')
+  requireOwner(task, act.from, 'hand off')
+  requireNoPendingHandoff(task, 'hand off')
+  requireAgent(p.to, 'Target agent')
+  if (p.to === act.from) throw invalid('Cannot hand a task off to yourself.')
+
+  const before = { status: task.status, pendingHandoffTo: task.pendingHandoffTo }
   task.handoffs.push({
     from: act.from,
     to: p.to,
     intent: p.intent,
     timestamp: act.timestamp,
     accepted: null,
+    statusBefore: task.status,
   })
+  task.pendingHandoffTo = p.to
+  task.status = 'handoff_pending'
   task.updatedAt = act.timestamp
-  // notify target by auto-subscribing
-  subscribeTo(p.to, p.taskId)
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status, pendingHandoffTo: before.pendingHandoffTo },
-    { status: task.status, pendingHandoffTo: task.pendingHandoffTo },
-    `${act.from} → handoff ${p.taskId} to ${p.to} (intent: ${p.intent})`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  addSubscription(p.to, task.id)
+  const evt = record(act, task, before, { status: task.status, pendingHandoffTo: p.to }, `${act.from} → handoff ${task.id} to ${p.to} (intent: ${p.intent})`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleAcceptHandoff(act: Act): ActResult {
-  const p = AcceptHandoffPayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.pendingHandoffTo !== act.from)
-    return fail(act, `No pending handoff to ${act.from}.`)
-  const before = snapshot(task)
-  const ho = [...task.handoffs].reverse().find((h) => h.to === act.from && h.accepted === null)
+const handleAcceptHandoff: Handler<'accept_handoff'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  if (task.status !== 'handoff_pending' || task.pendingHandoffTo !== act.from) {
+    throw conflict(`No pending handoff of ${task.id} to ${act.from}.`)
+  }
+  const ho = pendingHandoff(task)
+  const before = { assignee: task.assignee, status: task.status, pendingHandoffTo: task.pendingHandoffTo }
+  const previousOwner = task.assignee
   if (ho) {
     ho.accepted = true
     ho.acceptedAt = act.timestamp
   }
-  const previousOwner = task.assignee
   task.assignee = act.from
   task.pendingHandoffTo = null
   task.status = 'in_progress'
+  task.blockedReason = null
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { assignee: before.assignee, status: before.status },
-    { assignee: task.assignee, status: task.status },
-    `${act.from} accepted handoff of ${p.taskId} from ${previousOwner}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  task.claims.push({ agentId: act.from, timestamp: act.timestamp, note: `accepted handoff (${ho?.intent ?? 'unknown intent'})` })
+  const evt = record(act, task, before, { assignee: task.assignee, status: task.status, pendingHandoffTo: null }, `${act.from} accepted handoff of ${task.id} from ${previousOwner}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleRejectHandoff(act: Act): ActResult {
-  const p = RejectHandoffPayload.parse(act.payload)
-  const task = getTask(act)
-  if (task.pendingHandoffTo !== act.from)
-    return fail(act, `No pending handoff to ${act.from}.`)
-  const before = snapshot(task)
-  const ho = [...task.handoffs].reverse().find((h) => h.to === act.from && h.accepted === null)
+const handleRejectHandoff: Handler<'reject_handoff'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  if (task.status !== 'handoff_pending' || task.pendingHandoffTo !== act.from) {
+    throw conflict(`No pending handoff of ${task.id} to ${act.from}.`)
+  }
+  const ho = pendingHandoff(task)
+  const before = { status: task.status, pendingHandoffTo: task.pendingHandoffTo }
+  const restored: TaskStatus = ho?.statusBefore ?? 'in_progress'
   if (ho) {
     ho.accepted = false
     ho.rejectedReason = p.reason
   }
   task.pendingHandoffTo = null
-  task.status = 'in_progress'
+  task.status = restored
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { pendingHandoffTo: before.pendingHandoffTo, status: before.status },
-    { pendingHandoffTo: null, status: task.status },
-    `${act.from} rejected handoff of ${p.taskId}: ${p.reason}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  removeSubscription(act.from, task.id)
+  const evt = record(act, task, before, { status: restored, pendingHandoffTo: null }, `${act.from} rejected handoff of ${task.id}: ${p.reason}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-// ============ information family ============
+// ---------------------------------------------------------------- information family
 
-function handleEvidence(act: Act): ActResult {
-  const p = EvidencePayload.parse(act.payload)
-  const task = getTask(act)
-  const id = store.newId('evidence')
+const handleEvidence: Handler<'evidence'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  const id = store.nextId('evidence', (x) => store.evidence.has(x))
+  const before = { evidenceIds: [...task.evidenceIds] }
   store.evidence.set(id, {
     id,
     taskId: task.id,
@@ -463,294 +590,273 @@ function handleEvidence(act: Act): ActResult {
     summary: p.summary,
     ref: p.ref,
     producedBy: act.from,
-    references: act.references,
+    references: [...act.references],
     timestamp: act.timestamp,
   })
   task.evidenceIds.push(id)
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { evidenceIds: task.evidenceIds.slice(0, -1) },
-    { evidenceIds: task.evidenceIds },
-    `${act.from} recorded evidence [${id}] (${p.type}): ${p.summary}`,
-    [...act.references, id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  const evt = record(act, task, before, { evidenceIds: [...task.evidenceIds] }, `${act.from} recorded evidence [${id}] (${p.type}): ${p.summary}`, [id])
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleDecision(act: Act): ActResult {
-  const p = DecisionPayload.parse(act.payload)
-  const task = getTask(act)
-  const id = store.newId('decision')
+const handleDecision: Handler<'decision'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  const id = store.nextId('decision', (x) => store.decisions.has(x))
+  const before = { decisionIds: [...task.decisionIds] }
   store.decisions.set(id, {
     id,
     taskId: task.id,
     text: p.text,
-    rationale: p.rationale || null,
+    rationale: p.rationale ?? null,
     decidedBy: act.from,
-    references: act.references,
+    references: [...act.references],
     timestamp: act.timestamp,
   })
   task.decisionIds.push(id)
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { decisionIds: task.decisionIds.slice(0, -1) },
-    { decisionIds: task.decisionIds },
-    `${act.from} decided [${id}]: ${p.text}`,
-    [...act.references, id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  const evt = record(act, task, before, { decisionIds: [...task.decisionIds] }, `${act.from} decided [${id}]: ${p.text}`, [id])
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-function handleUpdate(act: Act): ActResult {
-  const p = UpdatePayload.parse(act.payload)
-  const task = getTask(act)
-  const before = snapshot(task)
-  const field = p.field as 'objective' | 'constraints' | 'openItems' | 'nextSteps'
+const handleUpdate: Handler<'update'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'update')
+  if (!canManage(act.from, task)) {
+    throw forbidden(`${act.from} cannot update ${task.id}: only the owner, their managers, or governors can.`)
+  }
+  const field = p.field
+  const before = { [field]: clone(task[field]) }
+
   if (field === 'objective') {
-    task.objective = String(p.value)
+    if (typeof p.value !== 'string') throw invalid('objective must be a string')
+    task.objective = p.value
+  } else if (field === 'gates') {
+    if (!Array.isArray(p.value) || p.value.some((g) => typeof g !== 'object')) {
+      throw invalid('gates must be an array of {action, scope}')
+    }
+    const next = dedupeGates(p.value as Gate[])
+    const removed = task.gates.filter((g) => !next.some((n) => gateKey(n) === gateKey(g)))
+    if (removed.length && !canGovern(act.from)) {
+      throw forbidden(
+        `Removing gates (${removed.map(gateKey).join(', ')}) needs govern authority. Adding gates is allowed.`
+      )
+    }
+    task.gates = next
   } else {
-    const arr = Array.isArray(p.value) ? p.value.map(String) : [String(p.value)]
-    task[field] = arr
+    const v = p.value
+    if (typeof v === 'string') task[field] = [v]
+    else if (Array.isArray(v) && v.every((x) => typeof x === 'string')) task[field] = v as string[]
+    else throw invalid(`${field} must be a string or string[]`)
   }
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { [field]: before[field] },
-    { [field]: task[field] },
-    `${act.from} updated ${field} on ${p.taskId}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  const evt = record(act, task, before, { [field]: clone(task[field]) }, `${act.from} updated ${field} on ${task.id}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-// ============ conversation family ============
+// ---------------------------------------------------------------- conversation family
 
-function handleQuestion(act: Act): ActResult {
-  const p = QuestionPayload.parse(act.payload)
-  const id = store.newId('question')
+export function isExpired(expiresAt: string, now: string): boolean {
+  return now > expiresAt
+}
+
+const handleQuestion: Handler<'question'> = (act, p) => {
+  requireTarget(p.to)
+  const taskId = p.taskId ?? act.taskId ?? null
+  if (taskId) requireTask(taskId)
+  const id = store.nextId('question', (x) => store.questions.has(x))
+  const ttl = p.ttlSeconds ?? act.ttl ?? DEFAULT_TTL_SECONDS
   store.questions.set(id, {
     id,
-    taskId: p.taskId || act.taskId || null,
+    taskId,
     from: act.from,
     to: p.to,
     about: p.about,
-    contextRef: p.contextRef || null,
+    contextRef: p.contextRef ?? null,
+    status: 'open',
     answered: false,
     answer: null,
+    answeredBy: null,
+    expiresAt: addSeconds(act.timestamp, ttl),
     timestamp: act.timestamp,
   })
-  const evt = recordLedger(
-    act,
-    act.taskId ? store.tasks.get(act.taskId) : undefined,
-    {},
-    { questionId: id },
-    `${act.from} → ${p.to}: Q "${p.about}"`,
-    [...act.references, id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+  const evt = record(act, taskId ? store.tasks.get(taskId)! : null, {}, { questionId: id, to: p.to }, `${act.from} → ${p.to}: Q "${p.about}"`, [id])
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-function handleAnswer(act: Act): ActResult {
-  const p = AnswerPayload.parse(act.payload)
+const handleAnswer: Handler<'answer'> = (act, p) => {
   const q = store.questions.get(p.questionId)
-  if (!q) return fail(act, `Question ${p.questionId} not found`)
-  const before = { answered: q.answered, answer: q.answer }
+  if (!q) throw notFound(`Question ${p.questionId} not found`)
+  if (!isRecipient(act.from, q.to)) throw forbidden(`${p.questionId} was asked to ${q.to}, not ${act.from}.`)
+  if (q.status !== 'open') throw conflict(`Question ${p.questionId} is already ${q.status}.`)
+  if (isExpired(q.expiresAt, act.timestamp)) throw conflict(`Question ${p.questionId} expired at ${q.expiresAt}.`)
+  const before = { status: q.status, answer: q.answer }
+  q.status = 'answered'
   q.answered = true
   q.answer = p.payload
-  const evt = recordLedger(
-    act,
-    q.taskId ? store.tasks.get(q.taskId) : undefined,
-    before,
-    { answered: true, answer: q.answer },
-    `${act.from} answered ${p.questionId}`,
-    [...act.references, p.questionId]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+  q.answeredBy = act.from
+  const evt = record(act, q.taskId ? store.tasks.get(q.taskId) ?? null : null, before, { status: 'answered', answer: q.answer }, `${act.from} answered ${p.questionId}`, [p.questionId])
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-function handleProposal(act: Act): ActResult {
-  const p = ProposalPayload.parse(act.payload)
-  const id = store.newId('proposal')
+const handleProposal: Handler<'proposal'> = (act, p) => {
+  requireTarget(p.to)
+  const taskId = p.taskId ?? act.taskId ?? null
+  if (taskId) requireTask(taskId)
+  const id = store.nextId('proposal', (x) => store.proposals.has(x))
+  const ttl = p.ttlSeconds ?? act.ttl ?? DEFAULT_TTL_SECONDS
   store.proposals.set(id, {
     id,
-    taskId: p.taskId || act.taskId || null,
+    taskId,
     from: act.from,
     to: p.to,
     what: p.what,
     why: p.why,
+    status: 'open',
     countered: false,
     counter: null,
+    counteredBy: null,
+    expiresAt: addSeconds(act.timestamp, ttl),
     timestamp: act.timestamp,
   })
-  const evt = recordLedger(
-    act,
-    act.taskId ? store.tasks.get(act.taskId) : undefined,
-    {},
-    { proposalId: id },
-    `${act.from} → ${p.to}: propose "${p.what}" (${p.why})`,
-    [...act.references, id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+  const evt = record(act, taskId ? store.tasks.get(taskId)! : null, {}, { proposalId: id, to: p.to }, `${act.from} → ${p.to}: propose "${p.what}" (${p.why})`, [id])
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-function handleCounter(act: Act): ActResult {
-  const p = CounterPayload.parse(act.payload)
+const handleCounter: Handler<'counter'> = (act, p) => {
   const pr = store.proposals.get(p.proposalId)
-  if (!pr) return fail(act, `Proposal ${p.proposalId} not found`)
-  const before = { countered: pr.countered, counter: pr.counter }
+  if (!pr) throw notFound(`Proposal ${p.proposalId} not found`)
+  if (!isRecipient(act.from, pr.to)) throw forbidden(`${p.proposalId} was made to ${pr.to}, not ${act.from}.`)
+  if (pr.status !== 'open') throw conflict(`Proposal ${p.proposalId} is already ${pr.status}.`)
+  if (isExpired(pr.expiresAt, act.timestamp)) throw conflict(`Proposal ${p.proposalId} expired at ${pr.expiresAt}.`)
+  const before = { status: pr.status, counter: pr.counter }
+  pr.status = 'countered'
   pr.countered = true
   pr.counter = p.alternative
-  const evt = recordLedger(
-    act,
-    pr.taskId ? store.tasks.get(pr.taskId) : undefined,
-    before,
-    { countered: true, counter: pr.counter },
-    `${act.from} counters ${p.proposalId}: ${p.alternative}`,
-    [...act.references, p.proposalId]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+  pr.counteredBy = act.from
+  const evt = record(act, pr.taskId ? store.tasks.get(pr.taskId) ?? null : null, before, { status: 'countered', counter: pr.counter }, `${act.from} counters ${p.proposalId}: ${p.alternative}`, [p.proposalId])
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-// ============ authority family ============
+// ---------------------------------------------------------------- authority family
 
-function handleRequestApproval(act: Act): ActResult {
-  const p = RequestApprovalPayload.parse(act.payload)
-  const approval = requestApproval(
-    act.from,
-    p.action,
-    p.scope,
-    p.taskId || act.taskId || null,
-    act.references
-  )
-  const task = p.taskId || act.taskId ? store.tasks.get(p.taskId || act.taskId!) : undefined
-  const evt = recordLedger(
-    act,
-    task,
-    {},
-    { approvalId: approval.id, status: 'pending' },
-    `${act.from} requested approval for ${p.action}/${p.scope} → ${approval.id} (approver: ${approval.approver || 'unassigned'})`,
-    [...act.references, approval.id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval, stateChanged: true, task }
+const handleRequestApproval: Handler<'request_approval'> = (act, p) => {
+  const taskId = p.taskId ?? act.taskId ?? null
+  const task = taskId ? requireTask(taskId) : null
+  if (hasAuthority(act.from, p.action, p.scope)) {
+    throw conflict(`${act.from} already holds direct authority for ${p.action}/${p.scope}; no approval needed.`)
+  }
+  const existing = findPendingApproval(act.from, p.action, p.scope, taskId)
+  if (existing) throw conflict(`Approval ${existing.id} for ${p.action}/${p.scope} is already pending with ${existing.approver}.`)
+  const approval = createApproval({
+    requestedBy: act.from,
+    action: p.action,
+    scope: p.scope,
+    taskId,
+    references: act.references,
+    at: act.timestamp,
+  })
+  const evt = record(act, task, {}, { approvalId: approval.id, status: 'pending', approver: approval.approver }, `${act.from} requested approval for ${p.action}/${p.scope} → ${approval.id} (approver: ${approval.approver})`, [approval.id])
+  return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 
-function handleAuthorize(act: Act): ActResult {
-  const p = AuthorizePayload.parse(act.payload)
-  const approval = authorizeApproval(p.approvalId, act.from)
-  const task = approval.taskId ? store.tasks.get(approval.taskId) : undefined
-  const evt = recordLedger(
-    act,
-    task,
-    { approvalStatus: 'pending' },
-    { approvalStatus: 'approved', decidedBy: act.from },
-    `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope})`,
-    [...act.references, approval.id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval, stateChanged: true, task }
+const handleAuthorize: Handler<'authorize'> = (act, p) => {
+  const approval = authorizeApproval(p.approvalId, act.from, act.timestamp)
+  const task = approval.taskId ? store.tasks.get(approval.taskId) ?? null : null
+  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'approved', decidedBy: act.from }, `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope} for ${approval.requestedBy})`, [approval.id])
+  return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 
-function handleDeny(act: Act): ActResult {
-  const p = DenyPayload.parse(act.payload)
-  const approval = denyApproval(p.approvalId, act.from, p.reason)
-  const task = approval.taskId ? store.tasks.get(approval.taskId) : undefined
-  const evt = recordLedger(
-    act,
-    task,
-    { approvalStatus: 'pending' },
-    { approvalStatus: 'denied', decidedBy: act.from, reason: p.reason },
-    `${act.from} DENIED ${approval.id} (${approval.action}/${approval.scope}): ${p.reason}`,
-    [...act.references, approval.id]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval, stateChanged: true, task }
+const handleDeny: Handler<'deny'> = (act, p) => {
+  const approval = denyApproval(p.approvalId, act.from, p.reason, act.timestamp)
+  const task = approval.taskId ? store.tasks.get(approval.taskId) ?? null : null
+  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'denied', decidedBy: act.from, reason: p.reason }, `${act.from} DENIED ${approval.id} (${approval.action}/${approval.scope}): ${p.reason}`, [approval.id])
+  return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 
-function handleEscalate(act: Act): ActResult {
-  const p = EscalatePayload.parse(act.payload)
-  const task = store.tasks.get(p.taskId)
-  if (!task) return fail(act, `Task ${p.taskId} not found`)
-  const before = snapshot(task)
+const handleEscalate: Handler<'escalate'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'escalate')
+  requireNoPendingHandoff(task, 'escalate')
+  requireAgent(p.to, 'Escalation target')
+  if (p.to === act.from) throw invalid('Cannot escalate to yourself.')
+  if (!canManage(act.from, task)) {
+    throw forbidden(`${act.from} cannot escalate ${task.id}: only the owner, their managers, or governors can.`)
+  }
+  const before = { status: task.status, blockedReason: task.blockedReason, escalatedTo: task.escalatedTo }
   task.status = 'blocked'
   task.blockedReason = `Escalated to ${p.to}: ${p.reason}`
+  task.escalatedTo = p.to
   task.updatedAt = act.timestamp
-  const evt = recordLedger(
-    act,
-    task,
-    { status: before.status },
-    { status: task.status, escalatedTo: p.to },
-    `${act.from} escalated ${p.taskId} to ${p.to}: ${p.reason}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true, task }
+  addSubscription(p.to, task.id)
+  const evt = record(act, task, before, { status: 'blocked', blockedReason: task.blockedReason, escalatedTo: p.to }, `${act.from} escalated ${task.id} to ${p.to}: ${p.reason}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
-// ============ lifecycle family ============
+// ---------------------------------------------------------------- lifecycle family
 
-function subscribeTo(agentId: string, taskId: string) {
-  const agent = store.agents.get(agentId)
-  if (agent && !agent.subscriptions.includes(taskId)) {
-    agent.subscriptions.push(taskId)
+function subscriptionTarget(p: { taskId?: string; scope?: string }): string {
+  if (p.taskId) {
+    requireTask(p.taskId)
+    return p.taskId
   }
-}
-
-function unsubscribeFrom(agentId: string, taskId: string) {
-  const agent = store.agents.get(agentId)
-  if (agent) {
-    agent.subscriptions = agent.subscriptions.filter((s) => s !== taskId)
+  const scope = p.scope!
+  if (scope === 'workspace') return scope
+  if (scope.startsWith('role:')) {
+    requireTarget(scope)
+    return scope
   }
+  throw invalid(`scope must be "workspace" or "role:<name>", got "${scope}"`)
 }
 
-function handleSubscribe(act: Act): ActResult {
-  const p = SubscribePayload.parse(act.payload)
-  const agent = getAgent(act)
-  const target = p.taskId || p.scope
-  if (target && !agent.subscriptions.includes(target)) {
-    agent.subscriptions.push(target)
-  }
-  const evt = recordLedger(
-    act,
-    undefined,
-    { subscriptions: agent.subscriptions.slice(0, -1) },
-    { subscriptions: agent.subscriptions },
-    `${act.from} subscribed to ${target}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+const handleSubscribe: Handler<'subscribe'> = (act, p) => {
+  const target = subscriptionTarget(p)
+  const agent = store.agents.get(act.from)!
+  const before = { subscriptions: [...agent.subscriptions] }
+  if (!addSubscription(act.from, target)) throw conflict(`${act.from} is already subscribed to ${target}.`)
+  const evt = record(act, p.taskId ? store.tasks.get(p.taskId)! : null, before, { subscriptions: [...agent.subscriptions] }, `${act.from} subscribed to ${target}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-function handleUnsubscribe(act: Act): ActResult {
-  const p = UnsubscribePayload.parse(act.payload)
-  const agent = getAgent(act)
-  const target = p.taskId || p.scope
-  if (target) {
-    agent.subscriptions = agent.subscriptions.filter((s) => s !== target)
-  }
-  const evt = recordLedger(
-    act,
-    undefined,
-    {},
-    { subscriptions: agent.subscriptions },
-    `${act.from} unsubscribed from ${target}`,
-    act.references
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+const handleUnsubscribe: Handler<'unsubscribe'> = (act, p) => {
+  const target = p.taskId ?? p.scope!
+  const agent = store.agents.get(act.from)!
+  const before = { subscriptions: [...agent.subscriptions] }
+  if (!removeSubscription(act.from, target)) throw conflict(`${act.from} is not subscribed to ${target}.`)
+  const evt = record(act, p.taskId ? store.tasks.get(p.taskId) ?? null : null, before, { subscriptions: [...agent.subscriptions] }, `${act.from} unsubscribed from ${target}`)
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-function handleAck(act: Act): ActResult {
-  const p = AckPayload.parse(act.payload)
-  const evt = recordLedger(
-    act,
-    undefined,
-    {},
-    { acked: p.actId },
-    `${act.from} acked act ${p.actId}`,
-    [...act.references, p.actId]
-  )
-  return { ok: true, act, ledgerEvent: evt, approval: null, stateChanged: true }
+const handleAck: Handler<'ack'> = (act, p) => {
+  const target = store.acts.get(p.actId)
+  if (!target) throw notFound(`Act ${p.actId} not found`)
+  const evt = record(act, target.taskId ? store.tasks.get(target.taskId) ?? null : null, {}, { acked: p.actId }, `${act.from} acked act ${p.actId}`, [p.actId])
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
-export { ACT_FAMILY }
+// ---------------------------------------------------------------- registry
+
+const HANDLERS: { [K in ActType]: Handler<K> } = {
+  create_task: handleCreateTask,
+  claim: handleClaim,
+  release: handleRelease,
+  complete: handleComplete,
+  block: handleBlock,
+  status: handleStatus,
+  handoff: handleHandoff,
+  accept_handoff: handleAcceptHandoff,
+  reject_handoff: handleRejectHandoff,
+  evidence: handleEvidence,
+  decision: handleDecision,
+  update: handleUpdate,
+  question: handleQuestion,
+  answer: handleAnswer,
+  proposal: handleProposal,
+  counter: handleCounter,
+  request_approval: handleRequestApproval,
+  authorize: handleAuthorize,
+  deny: handleDeny,
+  escalate: handleEscalate,
+  subscribe: handleSubscribe,
+  unsubscribe: handleUnsubscribe,
+  ack: handleAck,
+}

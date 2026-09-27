@@ -6,14 +6,19 @@
 //                                               (e.g. ?file=README.md)
 //   GET /api/download?list=1                  → returns JSON index of files
 //
-// Files are read from /home/z/my-project/download/NeuralOps-MCP/
+// Files are read from <project root>/download/NeuralOps-MCP/ (override with NEURALOPS_DOCS_DIR).
 
 import { NextRequest, NextResponse } from 'next/server'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve, sep, normalize } from 'node:path'
 
-const DOCS_DIR = '/home/z/my-project/download/NeuralOps-MCP'
-const ZIP_PATH = '/home/z/my-project/download/NeuralOps-MCP.zip'
+const DOWNLOAD_ROOT = process.env.NEURALOPS_DOCS_DIR
+  ? resolve(process.env.NEURALOPS_DOCS_DIR, '..')
+  : resolve(process.cwd(), 'download')
+const DOCS_DIR = process.env.NEURALOPS_DOCS_DIR
+  ? resolve(process.env.NEURALOPS_DOCS_DIR)
+  : join(DOWNLOAD_ROOT, 'NeuralOps-MCP')
+const ZIP_PATH = join(DOWNLOAD_ROOT, 'NeuralOps-MCP.zip')
 
 // Guard against path traversal — ensure the resolved path stays inside DOCS_DIR.
 function safePath(name: string): string | null {
@@ -33,11 +38,11 @@ export async function GET(req: NextRequest) {
   // --- list mode: return JSON index of files ---
   if (list === '1') {
     try {
-      const names = await readdir(DOCS_DIR)
+      const names = await readdir(/*turbopackIgnore: true*/ DOCS_DIR)
       const entries: { name: string; size: number }[] = []
       for (const n of names) {
         const full = join(DOCS_DIR, n)
-        const s = await stat(full)
+        const s = await stat(/*turbopackIgnore: true*/ full)
         if (s.isFile()) {
           entries.push({ name: n, size: s.size })
         }
@@ -62,7 +67,7 @@ export async function GET(req: NextRequest) {
       )
     }
     try {
-      const data = await readFile(safe)
+      const data = await readFile(/*turbopackIgnore: true*/ safe)
       const isMarkdown = safe.toLowerCase().endsWith('.md')
       return new NextResponse(data, {
         status: 200,
@@ -70,7 +75,7 @@ export async function GET(req: NextRequest) {
           'Content-Type': isMarkdown
             ? 'text/markdown; charset=utf-8'
             : 'application/octet-stream',
-          'Content-Disposition': `inline; filename="${file.split(sep).pop()}"`,
+          'Content-Disposition': `inline; filename="${(safe.split(sep).pop() ?? 'file').replace(/[^A-Za-z0-9._-]/g, '_')}"`,
           'Cache-Control': 'no-cache',
         },
       })
@@ -84,7 +89,7 @@ export async function GET(req: NextRequest) {
 
   // --- default: serve the zip ---
   try {
-    const data = await readFile(ZIP_PATH)
+    const data = await readFile(/*turbopackIgnore: true*/ ZIP_PATH)
     return new NextResponse(data, {
       status: 200,
       headers: {

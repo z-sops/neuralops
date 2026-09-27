@@ -28,21 +28,17 @@ export default function Page() {
 
   // Selected task defaults to task_42 (the rich-history task) once the state
   // arrives, but lets the user override it.
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
-  useEffect(() => {
-    if (selectedTaskId) return
-    if (state.tasks.length === 0) return
-    const t42 = state.tasks.find((t) => t.id === 'task_42')
-    setSelectedTaskId(t42 ? t42.id : state.tasks[0].id)
-  }, [state.tasks, selectedTaskId])
+  const [pickedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const selectedTaskId =
+    (pickedTaskId && state.tasks.some((t) => t.id === pickedTaskId) ? pickedTaskId : null) ??
+    state.tasks.find((t) => t.id === 'task_42')?.id ??
+    state.tasks[0]?.id ??
+    null
 
-  // Whenever the ledger changes (a new event arrives) we bump a refresh signal
-  // so the compaction comparison re-fetches.
-  const [refreshSignal, setRefreshSignal] = useState(0)
-  useEffect(() => {
-    if (!lastLedgerEvent) return
-    setRefreshSignal((n) => n + 1)
-  }, [lastLedgerEvent])
+  // The compaction comparison re-fetches whenever the ledger moves (new event
+  // or reseed) or the user forces a refresh.
+  const [manualRefresh, setRefreshSignal] = useState(0)
+  const refreshSignal = `${state.ledgerHead ?? state.ledgerTotal}:${lastLedgerEvent?.id ?? ''}:${manualRefresh}`
 
   const [resetting, setResetting] = useState(false)
   const onReset = async () => {

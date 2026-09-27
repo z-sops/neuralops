@@ -81,13 +81,13 @@ Developer → production deployment
 mini-services/neuralops-mcp/
 ├── src/
 │   ├── protocol/
-│   │   ├── act-types.ts       # 22 act types, 6 families
+│   │   ├── act-types.ts       # 23 act types, 6 families
 │   │   ├── envelope.ts        # Act envelope + zod schema
 │   │   └── payloads.ts        # per-act payload schemas
 │   │
 │   ├── state/
 │   │   ├── types.ts           # all entity types
-│   │   ├── store.ts           # in-memory store + pub/sub
+│   │   ├── store.ts           # store: views + hash-chained ledger + journal
 │   │   └── token-estimate.ts  # chars/4 heuristic
 │   │
 │   ├── engines/

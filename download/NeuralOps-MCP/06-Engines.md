@@ -1,5 +1,7 @@
 # NeuralOps MCP — Engines
 
+> V0.1.1: authority engine dobara likha gaya (policies, approver chain, veto, single-use approvals). Journal/replay engine: `17-V0.1.1-Hardening.md` §17.5.
+
 ## 6.1 Task Manager — the dispatcher
 
 Yeh heart hai. `processAct(input)` ka flow:
@@ -33,85 +35,49 @@ Har act type ka apna handler hai (`handleClaim`, `handleComplete`, `handleHandof
 
 ### Authority check integration (in handleComplete)
 
-`handleComplete` ke andar — agar evidence mein type="deploy" hai ya resultRef mein "production" hai:
+V0.1.1: gate **task aur policy se** tay hota hai, agent ke bheje hue lafzon se nahi.
 
 ```typescript
-if (isDeploy && !hasAuthority(actor, 'complete', 'production')
-            && !hasApprovedApproval(actor, 'complete', 'production', taskId)) {
-    // CREATE PENDING APPROVAL — DO NOT COMPLETE
-    approval = requestApproval(actor, 'complete', 'production', taskId)
-    record ledger: "requested approval"
-    return { ok: true, stateChanged: false, approval }
+// Scopes this completion touches:
+//   task.gates (e.g. complete/production)  +  payload.scope  +
+//   inferred "production" (deploy evidence / prod:// resultRef) — inference can only ADD
+for (const scope of completionScopes(task, payload)) {
+  if (hasAuthority(actor, 'complete', scope)) continue              // direct grant
+  const granted = findConsumableApproval(actor, 'complete', scope, task.id)
+  if (granted) { toConsume.push(granted); continue }                 // single-use, task-bound
+  const pending = findPendingApproval(actor, 'complete', scope, task.id)
+  if (pending) return { stateChanged: false, approval: pending }     // no approval spam
+  const approval = createApproval(...)                               // approver from policy → else manager
+  record ledger: "tried to complete … → approval required"
+  return { stateChanged: false, approval, ledgerEvent }
 }
+// …complete, then consumeApproval(a, act.id) for each used approval
 ```
 
-Yaani backend agent production deploy nahi kar sakta bina architect approval ke. **Authority engine enforce karta hai, gentleman's agreement nahi.**
+Pehle har precondition check hoti hai, phir mutation. Reject hua act koi trace nahi chhodta (counters bhi restore).
 
 ## 6.2 Authority Engine
 
-3 core functions:
+### Direct grants — `hasAuthority(agentId, action, scope)`
+`agent.authority` mein match (wildcards `*` honoured). V0.1 mein CEO ka `*/*` kaam nahi karta tha, ab karta hai.
 
-### `hasAuthority(agentId, action, scope)` — direct grant check
-Agent ke authority table mein action/scope match ho aur `requiresApproval: false` ho.
+### Gatekeeping — policies
+`store.policies`: `{ action, scope, approver }`. `policyFor(action, scope)` sab se specific match deta hai. Policy na ho to approver = requester ka `reportsTo`. Woh bhi na ho to `forbidden`.
 
-```typescript
-export function hasAuthority(agentId, action, scope): boolean {
-  const agent = store.agents.get(agentId)
-  if (!agent) return false
-  return agent.authority.some(
-    (s) => s.action === action
-       && (s.scope === scope || s.scope === '*')
-       && !s.requiresApproval
-  )
-}
-```
+### Kaun decide kar sakta hai — `canDecide` / `canVeto`
+- **authorize:** named approver, ya approver ke upar reporting chain mein koi (`isAbove`), ya `*/*` holder.
+- **deny:** upar wale sab, **ya** jiske paas `deny` authority us scope pe ho (veto).
+- **Requester kabhi nahi** (separation of duties).
 
-### `approvalRequired(agentId, action, scope)` — gatekeeping check
-Agent ke paas direct authority nahi. System mein kahin gatekeeping rule hai (`requiresApproval: true`) jiska approver defined hai.
+### Single-use approvals
+- `findConsumableApproval(requestedBy, action, scope, taskId)`: sirf `approved`, `consumedAt === null`, **exact** taskId match.
+- `consumeApproval(a, actId, at)`: `consumedAt`, `consumedBy` set.
+- V0.1 ka `hasApprovedApproval` approval kabhi consume nahi karta tha, aur `taskId === null` pe kisi bhi task se match ho jata tha.
 
-```typescript
-export function approvalRequired(agentId, action, scope) {
-  // Direct grant → no approval needed.
-  if (hasAuthority(agentId, action, scope)) {
-    return { required: false, approver: null }
-  }
-  // Scan every agent's authority table for a gatekeeping rule
-  for (const candidate of store.agents.values()) {
-    for (const rule of candidate.authority) {
-      if (rule.action === action
-       && (rule.scope === scope || rule.scope === '*')
-       && rule.requiresApproval) {
-        return { required: true, approver: rule.approver }
-      }
-    }
-  }
-  return { required: false, approver: null }
-}
-```
-
-### `hasApprovedApproval(agentId, action, scope, taskId)` — flow continuation
-Pehle request_approval karke approval li, fir authorize hua. Ab dobara same action kar sakta hai.
-
-```typescript
-export function hasApprovedApproval(agentId, action, scope, taskId): boolean {
-  for (const a of store.approvals.values()) {
-    if (a.requestedBy === agentId
-     && a.action === action
-     && (a.scope === scope || a.scope === '*')
-     && a.status === 'approved'
-     && (taskId === null || a.taskId === taskId || a.taskId === null)) {
-      return true
-    }
-  }
-  return false
-}
-```
-
-### Approval lifecycle functions
-
-- `requestApproval(requestedBy, action, scope, taskId, references)` → creates pending Approval
-- `authorize(approvalId, decidedBy)` → marks approval as approved
-- `deny(approvalId, decidedBy, reason)` → marks approval as denied
+### Approval lifecycle
+- `createApproval({ requestedBy, action, scope, taskId, references, at })` → pending
+- `authorize(approvalId, decidedBy, at)` → `canDecide` check ke baad approved
+- `deny(approvalId, decidedBy, reason, at)` → `canDecide || canVeto` ke baad denied
 
 ## 6.3 Context Engine — **THE KILLER FEATURE**
 

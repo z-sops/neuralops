@@ -1,12 +1,12 @@
 // Token estimation utility.
-// V0.1 uses a rough chars/4 heuristic. A real implementation would use the
-// specific tokenizer of the consuming model. The point is to expose the
-// order-of-magnitude reduction that compaction produces.
+// V0.1 uses a chars/4 heuristic on the formatted text an agent would read.
+// It is an order-of-magnitude estimate, labelled as such in every response.
+// Swap in a per-model tokenizer here without touching the engines.
+
+export const TOKEN_METHOD = 'estimate: chars/4 of the formatted text'
 
 export function estimateTokens(value: unknown): number {
-  const text =
-    typeof value === 'string' ? value : JSON.stringify(value ?? '')
-  // Count conservatively: 1 token ≈ 4 chars for English/code text.
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '')
   return Math.max(1, Math.ceil(text.length / 4))
 }
 

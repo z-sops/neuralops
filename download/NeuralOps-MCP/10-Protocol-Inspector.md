@@ -1,5 +1,7 @@
 # NeuralOps MCP — Protocol Inspector (Dashboard)
 
+> V0.1.1: 10 scenario buttons (accept-handoff aur self-approval-rejected add hue); "approval required" sirf asli gate pe; approvals panel "USED" dikhata hai. Dekhein §17.11.
+
 ## 10.1 What it is
 
 > A visualization layer — NOT the product.
@@ -41,8 +43,8 @@ Built at Next.js `/` route. Single page, 5 sections.
 - Title: "Shared Work State — Context Compaction"
 - Task selector (chips for all tasks; defaults to task_42)
 - **Side-by-side panels:**
-  - LEFT: "Full raw context" — `<pre>` showing `fullFormatted` string + token count badge ("1,363 tokens")
-  - RIGHT: "Compacted context" — `<pre>` showing `compactedFormatted` string + token count badge ("398 tokens") + big "−71% tokens" reduction banner
+  - LEFT: "Full raw context" — `<pre>` showing `fullFormatted` string + token count badge (estimate)
+  - RIGHT: "Compacted context" — `<pre>` showing `compactedFormatted` string + token count badge (estimate) + big "−N% tokens" reduction banner (≈70% fresh seed, ≈81% after golden path)
 - Below: explanation — "Agent B requests get_task_context(task_id) and receives the compacted snapshot — shared knowledge without shared token waste. Deeper detail available on-demand via get_evidence / get_decision."
 - Auto-refetches when new ledger events arrive
 - Skeleton loaders during fetch

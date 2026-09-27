@@ -1,16 +1,23 @@
 // Context Engine — Compaction
 //
-// The killer feature. An agent requesting task context receives a small,
-// structured snapshot (OBJECTIVE / COMPLETED / DECISIONS / CONSTRAINTS /
-// EVIDENCE / OPEN / NEXT) instead of inheriting another agent's entire
-// conversation. Deeper detail is available on-demand via references.
+// An agent requesting task context receives a small, structured snapshot
+// (OBJECTIVE / COMPLETED / DECISIONS / CONSTRAINTS / EVIDENCE / OPEN / NEXT)
+// instead of inheriting another agent's history. Detail is fetched on demand
+// by reference (get_evidence / get_decision / get_original_context).
+//
+// Token counts are a chars/4 ESTIMATE (`method` says so on every response).
+// "Full" = everything NeuralOps itself holds about the task (records + act
+// log). It is not a measurement against an agent's real conversation.
 
 import { store } from '../state/store.js'
-import type { Decision, Evidence, Task } from '../state/types.js'
-import { estimateTokens, formatTokens } from '../state/token-estimate.js'
+import type { Approval, Decision, Evidence, Proposal, Question, Task } from '../state/types.js'
+import { estimateTokens, formatTokens, TOKEN_METHOD } from '../state/token-estimate.js'
+import { isExpired } from './task-manager.js'
+import { notFound } from '../errors.js'
 
 export interface CompactedContext {
   taskId: string
+  title: string
   objective: string
   completed: string[]
   decisions: { id: string; text: string; decidedBy: string }[]
@@ -18,18 +25,22 @@ export interface CompactedContext {
   evidence: { id: string; type: string; summary: string; ref: string }[]
   open: string[]
   next: string[]
+  gates: string[]
   owner: string | null
   status: string
   tokens: number
+  method: string
 }
 
 export interface FullContext {
   taskId: string
   tokens: number
+  method: string
   rawActs: unknown[]
   fullTask: unknown
   allDecisions: unknown[]
   allEvidence: unknown[]
+  allApprovals: unknown[]
 }
 
 export interface ContextComparison {
@@ -37,72 +48,82 @@ export interface ContextComparison {
   fullTokens: number
   compactedTokens: number
   reductionPct: number
+  method: string
   fullFormatted: string
   compactedFormatted: string
 }
 
-// Build the structured, compacted context an agent reads on handoff/claim.
-export function getCompactedContext(taskId: string): CompactedContext {
+function requireTask(taskId: string): Task {
   const task = store.tasks.get(taskId)
-  if (!task) throw new Error(`Task ${taskId} not found`)
+  if (!task) throw notFound(`Task ${taskId} not found`)
+  return task
+}
 
+const nowIso = () => new Date().toISOString()
+
+export function exchangeStatus(x: Question | Proposal, now = nowIso()): string {
+  return x.status === 'open' && isExpired(x.expiresAt, now) ? 'expired' : x.status
+}
+
+export function getCompactedContext(taskId: string): CompactedContext {
+  const task = requireTask(taskId)
   const decisions: Decision[] = store.decisionsForTask(taskId)
   const evidence: Evidence[] = store.evidenceForTask(taskId)
+  const approvals: Approval[] = store.approvalsForTask(taskId)
+  const now = nowIso()
 
   const completed: string[] = []
-  if (task.status === 'completed') {
-    completed.push(task.resultRef || task.objective)
-  }
-  // Treat each piece of evidence with type "result" as a completed item.
-  for (const e of evidence) {
-    if (e.type === 'result') completed.push(e.summary)
-  }
-  // Completed handoffs (accepted) also count as progress milestones.
+  if (task.status === 'completed') completed.push(task.resultRef || task.objective)
+  for (const e of evidence) if (e.type === 'result') completed.push(e.summary)
   for (const h of task.handoffs) {
-    if (h.accepted === true) {
-      completed.push(`Handoff to ${h.to} (${h.intent}) — accepted`)
-    }
+    if (h.accepted === true) completed.push(`Handoff ${h.from} → ${h.to} (${h.intent}) accepted`)
   }
+
+  const open = [...task.openItems]
+  if (task.status === 'blocked' && task.blockedReason) open.push(`BLOCKED: ${task.blockedReason}`)
+  if (task.pendingHandoffTo) open.push(`Handoff pending to ${task.pendingHandoffTo}`)
+  for (const a of approvals) {
+    if (a.status === 'pending') open.push(`Approval ${a.id} pending: ${a.action}/${a.scope} for ${a.requestedBy} (approver ${a.approver})`)
+    if (a.status === 'approved' && !a.consumedAt) open.push(`Approval ${a.id} granted, not yet used: ${a.action}/${a.scope} for ${a.requestedBy}`)
+    if (a.status === 'denied') open.push(`Approval ${a.id} DENIED by ${a.decidedBy}: ${a.reason}`)
+  }
+  for (const q of store.questions.values()) {
+    if (q.taskId === taskId && exchangeStatus(q, now) === 'open') open.push(`Q ${q.id} ${q.from} → ${q.to}: ${q.about}`)
+  }
+  for (const p of store.proposals.values()) {
+    if (p.taskId === taskId && exchangeStatus(p, now) === 'open') open.push(`Proposal ${p.id} ${p.from} → ${p.to}: ${p.what}`)
+  }
+
+  const next = [...task.nextSteps]
+  if (task.eta) next.push(`ETA: ${task.eta}`)
 
   const compacted: CompactedContext = {
     taskId,
+    title: task.title,
     objective: task.objective,
     completed,
-    decisions: decisions.map((d) => ({
-      id: d.id,
-      text: d.text,
-      decidedBy: d.decidedBy,
-    })),
+    decisions: decisions.map((d) => ({ id: d.id, text: d.text, decidedBy: d.decidedBy })),
     constraints: task.constraints,
-    evidence: evidence.map((e) => ({
-      id: e.id,
-      type: e.type,
-      summary: e.summary,
-      ref: e.ref,
-    })),
-    open: task.openItems,
-    next: task.nextSteps,
+    evidence: evidence.map((e) => ({ id: e.id, type: e.type, summary: e.summary, ref: e.ref })),
+    open,
+    next,
+    gates: task.gates.map((g) => `${g.action}/${g.scope}`),
     owner: task.assignee,
     status: task.status,
     tokens: 0,
+    method: TOKEN_METHOD,
   }
-
-  compacted.tokens = estimateTokens(compacted)
+  compacted.tokens = estimateTokens(formatCompactedContext(compacted))
   return compacted
 }
 
-// The full raw context — every act log + full records. Used to demonstrate
-// the reduction compaction produces.
 export function getFullContext(taskId: string): FullContext {
-  const task = store.tasks.get(taskId)
-  if (!task) throw new Error(`Task ${taskId} not found`)
-  const events = store.ledgerForTask(taskId)
-  const decisions = store.decisionsForTask(taskId)
-  const evidence = store.evidenceForTask(taskId)
-  const rawActs = events.map((e) => ({
+  const task = requireTask(taskId)
+  const rawActs = store.ledgerForTask(taskId).map((e) => ({
     seq: e.seq,
     type: e.actType,
     actor: e.actor,
+    via: e.via,
     intent: e.intent,
     before: e.before,
     after: e.after,
@@ -113,94 +134,111 @@ export function getFullContext(taskId: string): FullContext {
   const ctx: FullContext = {
     taskId,
     tokens: 0,
+    method: TOKEN_METHOD,
     rawActs,
     fullTask: task,
-    allDecisions: decisions,
-    allEvidence: evidence,
+    allDecisions: store.decisionsForTask(taskId),
+    allEvidence: store.evidenceForTask(taskId),
+    allApprovals: store.approvalsForTask(taskId),
   }
-  ctx.tokens = estimateTokens(ctx)
+  ctx.tokens = estimateTokens(formatFullContext(ctx))
   return ctx
 }
 
 export function getContextComparison(taskId: string): ContextComparison {
   const full = getFullContext(taskId)
   const compacted = getCompactedContext(taskId)
-  const reductionPct =
-    full.tokens > 0
-      ? Math.round((1 - compacted.tokens / full.tokens) * 100)
-      : 0
+  const reductionPct = full.tokens > 0 ? Math.max(0, Math.round((1 - compacted.tokens / full.tokens) * 100)) : 0
   return {
     taskId,
     fullTokens: full.tokens,
     compactedTokens: compacted.tokens,
     reductionPct,
+    method: TOKEN_METHOD,
     fullFormatted: formatFullContext(full),
     compactedFormatted: formatCompactedContext(compacted),
   }
 }
 
+function section(lines: string[], title: string, items: string[], empty: string) {
+  lines.push(title)
+  if (items.length === 0) lines.push(empty)
+  else for (const x of items) lines.push(`- ${x}`)
+  lines.push('')
+}
+
 export function formatCompactedContext(c: CompactedContext): string {
-  const lines: string[] = []
-  lines.push(`OBJECTIVE`)
-  lines.push(c.objective)
-  lines.push('')
-  lines.push(`COMPLETED`)
-  if (c.completed.length === 0) lines.push('(none yet)')
-  else c.completed.forEach((x) => lines.push(`- ${x}`))
-  lines.push('')
-  lines.push(`DECISIONS`)
-  if (c.decisions.length === 0) lines.push('(none yet)')
-  else c.decisions.forEach((d) => lines.push(`- [${d.id}] ${d.text} (by ${d.decidedBy})`))
-  lines.push('')
-  lines.push(`CONSTRAINTS`)
-  if (c.constraints.length === 0) lines.push('(none)')
-  else c.constraints.forEach((x) => lines.push(`- ${x}`))
-  lines.push('')
-  lines.push(`EVIDENCE`)
-  if (c.evidence.length === 0) lines.push('(none yet)')
-  else c.evidence.forEach((e) => lines.push(`- [${e.id}] (${e.type}) ${e.summary} → ${e.ref}`))
-  lines.push('')
-  lines.push(`OPEN`)
-  if (c.open.length === 0) lines.push('(none)')
-  else c.open.forEach((x) => lines.push(`- ${x}`))
-  lines.push('')
-  lines.push(`NEXT`)
-  if (c.next.length === 0) lines.push('(none)')
-  else c.next.forEach((x) => lines.push(`- ${x}`))
-  lines.push('')
+  const lines: string[] = [`TASK ${c.taskId} — ${c.title}`, '', 'OBJECTIVE', c.objective, '']
+  section(lines, 'COMPLETED', c.completed, '(none yet)')
+  section(lines, 'DECISIONS', c.decisions.map((d) => `[${d.id}] ${d.text} (by ${d.decidedBy})`), '(none yet)')
+  section(lines, 'CONSTRAINTS', c.constraints, '(none)')
+  section(lines, 'EVIDENCE', c.evidence.map((e) => `[${e.id}] (${e.type}) ${e.summary} → ${e.ref}`), '(none yet)')
+  section(lines, 'OPEN', c.open, '(none)')
+  section(lines, 'NEXT', c.next, '(none)')
+  if (c.gates.length) section(lines, 'GATES', c.gates, '')
   lines.push(`OWNER: ${c.owner || '(unclaimed)'}   STATUS: ${c.status}`)
   return lines.join('\n')
 }
 
 export function formatFullContext(f: FullContext): string {
-  const lines: string[] = []
-  lines.push(`=== FULL RAW CONTEXT (acts + records) for ${f.taskId} ===`)
-  lines.push('')
-  lines.push(`--- TASK ---`)
-  lines.push(JSON.stringify(f.fullTask, null, 2))
-  lines.push('')
-  lines.push(`--- DECISIONS (${f.allDecisions.length}) ---`)
-  lines.push(JSON.stringify(f.allDecisions, null, 2))
-  lines.push('')
-  lines.push(`--- EVIDENCE (${f.allEvidence.length}) ---`)
-  lines.push(JSON.stringify(f.allEvidence, null, 2))
-  lines.push('')
+  const lines: string[] = [`=== FULL RAW CONTEXT (records + act log) for ${f.taskId} ===`, '']
+  lines.push('--- TASK ---', JSON.stringify(f.fullTask, null, 2), '')
+  lines.push(`--- DECISIONS (${f.allDecisions.length}) ---`, JSON.stringify(f.allDecisions, null, 2), '')
+  lines.push(`--- EVIDENCE (${f.allEvidence.length}) ---`, JSON.stringify(f.allEvidence, null, 2), '')
+  lines.push(`--- APPROVALS (${f.allApprovals.length}) ---`, JSON.stringify(f.allApprovals, null, 2), '')
   lines.push(`--- ACT LOG (${f.rawActs.length} events) ---`)
-  for (const a of f.rawActs) {
-    lines.push(JSON.stringify(a))
-  }
+  for (const a of f.rawActs) lines.push(JSON.stringify(a))
   return lines.join('\n')
 }
 
-// For on-demand deep retrieval (lazy loading).
+// ---- on-demand deep retrieval ----
 export function getEvidenceById(id: string) {
-  return store.evidence.get(id)
+  const e = store.evidence.get(id)
+  if (!e) throw notFound(`Evidence ${id} not found`)
+  return e
 }
 export function getDecisionById(id: string) {
-  return store.decisions.get(id)
+  const d = store.decisions.get(id)
+  if (!d) throw notFound(`Decision ${id} not found`)
+  return d
 }
 export function getOriginalContext(actId: string) {
-  return store.acts.get(actId)
+  const a = store.acts.get(actId)
+  if (!a) throw notFound(`Act ${actId} not found`)
+  return a
+}
+
+// ---- inbox: everything waiting on this agent ----
+export function getInbox(agentId: string) {
+  const agent = store.agents.get(agentId)
+  if (!agent) throw notFound(`Agent ${agentId} not found`)
+  const now = nowIso()
+  const forMe = (to: string) => to === agentId || (to.startsWith('role:') && to.slice(5) === agent.role)
+  const tasks = [...store.tasks.values()]
+  return {
+    agentId,
+    myTasks: tasks
+      .filter((t) => t.assignee === agentId && t.status !== 'completed' && t.status !== 'failed')
+      .map((t) => ({ id: t.id, title: t.title, status: t.status, progress: t.progress })),
+    handoffsToAccept: tasks
+      .filter((t) => t.status === 'handoff_pending' && t.pendingHandoffTo === agentId)
+      .map((t) => ({ taskId: t.id, from: t.assignee, intent: t.handoffs.at(-1)?.intent ?? null })),
+    escalatedToMe: tasks
+      .filter((t) => t.escalatedTo === agentId)
+      .map((t) => ({ taskId: t.id, reason: t.blockedReason })),
+    approvalsToDecide: [...store.approvals.values()].filter(
+      (a) => a.status === 'pending' && a.approver === agentId
+    ),
+    myPendingApprovals: [...store.approvals.values()].filter(
+      (a) => a.requestedBy === agentId && (a.status === 'pending' || (a.status === 'approved' && !a.consumedAt))
+    ),
+    questions: [...store.questions.values()]
+      .filter((q) => forMe(q.to) && exchangeStatus(q, now) === 'open')
+      .map((q) => ({ id: q.id, from: q.from, about: q.about, taskId: q.taskId, expiresAt: q.expiresAt })),
+    proposals: [...store.proposals.values()]
+      .filter((p) => forMe(p.to) && exchangeStatus(p, now) === 'open')
+      .map((p) => ({ id: p.id, from: p.from, what: p.what, why: p.why, taskId: p.taskId, expiresAt: p.expiresAt })),
+  }
 }
 
 export { formatTokens }

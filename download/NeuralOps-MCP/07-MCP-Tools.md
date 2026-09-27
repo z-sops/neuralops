@@ -1,154 +1,102 @@
 # NeuralOps MCP — Tool Registry
 
-## 7.1 Tool surface (15 tools)
+> V0.1.1: 33 tools, asli MCP stdio transport. Tafseel: `17-V0.1.1-Hardening.md`.
 
-Yeh woh tools hain jo NeuralOps AI agents ko expose karta hai (via MCP). Agent sirf yeh naam janta hai, internals nahi:
+## 7.1 Tool surface (33 tools)
 
-### Lifecycle / Workspace
-| Tool | Description |
-|------|-------------|
-| `neuralops_register` | Register an existing AI worker into workspace |
-| `neuralops_workspace` | Get workspace state (agents, tasks, approvals) |
-| `neuralops_tasks` | List tasks (optionally filtered by status) |
+### Query tools (10)
 
-### Task Lifecycle
-| Tool | Description |
-|------|-------------|
-| `neuralops_claim` | Claim an unclaimed task |
-| `neuralops_complete` | Mark complete (may trigger approval) |
+| Tool | Kaam |
+|------|------|
+| `neuralops_inbox` | Aap pe kya waiting hai: open tasks, handoffs, escalations, approvals to decide, open questions/proposals. **Pehle yahi call karein.** |
+| `neuralops_get_task_context` | Compacted context (OBJECTIVE / COMPLETED / DECISIONS / CONSTRAINTS / EVIDENCE / OPEN / NEXT / GATES). Default text format. |
+| `neuralops_get_full_context` | Task ka poora raw record (bara, kam use karein) |
+| `neuralops_get_evidence` | Ek evidence by id |
+| `neuralops_get_decision` | Ek decision by id |
+| `neuralops_get_original_context` | Original act envelope by act id |
+| `neuralops_whoami` | Aap ka agent record, authority, reporting line |
+| `neuralops_workspace` | Agents, tasks, pending approvals, policies |
+| `neuralops_tasks` | Tasks list (optional status filter) |
+| `neuralops_register` | Naya agent register (secure mode mein admin only), token ek dafa milta hai |
 
-### Handoff
-| Tool | Description |
-|------|-------------|
-| `neuralops_handoff` | Hand off task with intent |
-| `neuralops_accept_handoff` | Accept pending handoff |
+### Act tools (23): one per act type
 
-### Information
-| Tool | Description |
-|------|-------------|
-| `neuralops_decision` | Record durable decision |
-| `neuralops_evidence` | Record evidence (test/log/url) |
+`neuralops_<act>`:
 
-### Authority
-| Tool | Description |
-|------|-------------|
-| `neuralops_request_approval` | Request approval for constrained action |
-| `neuralops_authorize` | Approve pending request |
-| `neuralops_deny` | Deny pending request |
-| `neuralops_escalate` | Escalate blocked task |
+| Family | Tools |
+|--------|-------|
+| task | `create_task`, `claim`, `release`, `complete`, `block`, `status` |
+| handoff | `handoff`, `accept_handoff`, `reject_handoff` |
+| information | `evidence`, `decision`, `update` |
+| conversation | `question`, `answer`, `proposal`, `counter` |
+| authority | `request_approval`, `authorize`, `deny`, `escalate` |
+| lifecycle | `subscribe`, `unsubscribe`, `ack` |
 
-### Context Retrieval
-| Tool | Description |
-|------|-------------|
-| `neuralops_get_task_context` | Get COMPACTED task context |
-| `neuralops_get_evidence` | Get specific evidence (on-demand) |
-| `neuralops_get_decision` | Get specific decision (on-demand) |
+Har act tool ke extra optional args:
+- `references: string[]` — jin ids pe yeh act based hai (`decision_0001`, `evidence_0002`)
+- `actId: string` — idempotency key; wahi `actId` dobara bheja to `409 conflict`, do dafa apply nahi hota
 
 ## 7.2 Critical design choice
 
-> `send_message("...")` is NOT the primary API.
-> Freeform communication is an escape hatch.
+> `send_message("...")` is NOT the primary API. Freeform communication is an escape hatch.
 
-Agent ko generic "send message" nahi diya jata. Use typed acts diye jate hain — claim, handoff, decision, evidence, etc. Freeform sirf tab jab typed act ambiguity resolve na kar paaye (question/answer/proposal/counter).
+Conversation acts (`question`, `proposal`) TTL ke saath expire hote hain (default 1 ghanta) jab tak koi durable nateeja na nikle.
 
-## 7.3 Transport abstraction
+## 7.3 Schemas cannot drift
 
-Abhi tools HTTP REST se invoke hote hain. Lekin handlers same hain — `callTool(name, args, caller)` ek function hai jo kisi bhi transport pe chalega:
+Act tools ke `inputSchema` **usi zod schema se generate** hote hain (`z.toJSONSchema`) jis se dispatcher validate karta hai (`PAYLOAD_SCHEMAS` registry). V0.1 mein tool definitions haath se likhi thin aur protocol se alag ho sakti thin.
+
+## 7.4 Transport
 
 ```
-HTTP REST (V0.1 — current)
-MCP stdio (V0.2 — for Claude Code, Codex CLI)
-MCP streamable HTTP (V0.2 — for cloud-hosted agents)
-WebSocket (theoretical)
+Agent (Claude Code / Codex / Gemini CLI)
+   │  MCP stdio
+   ▼
+src/mcp/stdio.ts          ← stateless MCP server (@modelcontextprotocol/sdk)
+   │  HTTP + Bearer token
+   ▼
+Coordination Core :3031   ← one shared workspace
 ```
 
-**Handlers don't change. Transport is a thin adapter.**
+- `stdio.ts` koi state nahi rakhta, is liye alag processes ke agents ek hi workspace share karte hain.
+- Wahi `callTool(name, args, caller)` HTTP `/api/tools/:name` aur MCP dono ko serve karta hai.
+- Errors MCP `isError: true` ke saath `"<errorCode>: <message>"` aate hain (e.g. `forbidden: agent.backend cannot authorize its own request`).
 
-## 7.4 Tool definition schema
+Setup (Claude Code, Codex, `.mcp.json`): dekhein `17-V0.1.1-Hardening.md` §17.7.
 
-Har tool ka ek definition hai:
+## 7.5 Identity
 
-```typescript
-interface ToolDef {
-  name: string               // "neuralops_claim"
-  description: string        // human-readable
-  inputSchema: {             // JSON schema
-    type: "object"
-    properties: { ... }
-    required: [...]
-  }
-}
-```
-
-Example (`neuralops_claim`):
-
-```json
-{
-  "name": "neuralops_claim",
-  "description": "Claim an unclaimed task. Mutates task.assignee + task.status.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "taskId": { "type": "string" },
-      "note": { "type": "string" }
-    },
-    "required": ["taskId"]
-  }
-}
-```
-
-## 7.5 The dispatcher
-
-`callTool(name, args, callerAgent)` ke through:
-
-```typescript
-function callTool(name, args, callerAgent) {
-  switch (name) {
-    case 'neuralops_register':
-      return registerAgent(args, callerAgent)
-    case 'neuralops_workspace':
-      return { ok: true, result: getWorkspaceState() }
-    case 'neuralops_tasks':
-      return { ok: true, result: getTasks(args.status) }
-    case 'neuralops_get_task_context':
-      return { ok: true, result: getCompactedContext(args.taskId) }
-    case 'neuralops_get_evidence':
-      return { ok: true, result: getEvidenceById(args.evidenceId) }
-    case 'neuralops_get_decision':
-      return { ok: true, result: getDecisionById(args.decisionId) }
-    default:
-      // Treat as act submission
-      return submitActByName(name, args, callerAgent)
-  }
-}
-```
-
-Tool calls jo acts map karte hain (`neuralops_claim` → `claim` act), woh task-manager ke through dispatch hote hain.
+Caller identity **token se** aati hai, tool args se nahi. `from` tool argument nahi hai. Demo mode mein (sirf demo) `NEURALOPS_AGENT` / `X-Agent-Id` se impersonation hoti hai, aur ledger mein `via: "impersonated"` likha jata hai.
 
 ## 7.6 What an agent sees
 
-Agent (Claude Code, Codex, etc.) MCP connect karke sirf yeh dekhta hai:
-
 ```
-Available tools:
-- neuralops_register
-- neuralops_workspace
-- neuralops_tasks
-- neuralops_claim
-- neuralops_complete
-- neuralops_handoff
-- neuralops_accept_handoff
-- neuralops_decision
-- neuralops_evidence
-- neuralops_request_approval
-- neuralops_authorize
-- neuralops_deny
-- neuralops_escalate
-- neuralops_get_task_context
-- neuralops_get_evidence
-- neuralops_get_decision
+TASK task_42 — Build authentication module
+
+OBJECTIVE
+Implement a session-based authentication module …
+
+COMPLETED
+- Backend implementation complete: login, logout, session validation, role checks.
+- Handoff agent.architect → agent.backend (implement) accepted
+
+DECISIONS
+- [decision_0001] Session-based authentication selected over JWT for this service. (by agent.architect)
+- [decision_0002] Passwords hashed with argon2id (memory-hard). (by agent.architect)
+
+CONSTRAINTS
+- No production modification until security review is complete.
+…
+
+OPEN
+- Security review pending — Security agent must review before deploy.
+- Approval approval_0001 pending: complete/production for agent.backend (approver agent.architect)
+
+NEXT
+- Security agent must review the implementation.
+
+GATES
+- complete/production
+
+OWNER: agent.backend   STATUS: in_progress
 ```
-
-Agent doesn't need to know NeuralOps internals. It simply knows:
-
-> "I have access to the company coordination MCP."

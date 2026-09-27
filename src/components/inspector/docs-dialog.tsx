@@ -48,21 +48,40 @@ function fileLabel(name: string): string {
 }
 
 export function DocsDialog({ open, onOpenChange }: DocsDialogProps) {
-  const [files, setFiles] = useState<DocsFile[]>([])
+  const [files, setFiles] = useState<DocsFile[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [content, setContent] = useState<string>('')
-  const [loadingList, setLoadingList] = useState(false)
   const [loadingContent, setLoadingContent] = useState(false)
 
-  // Fetch file list when dialog opens
-  const fetchList = useCallback(async () => {
-    setLoadingList(true)
+  const loadingList = open && files === null
+
+  // Load one file's content (called from click handlers and after the list loads).
+  const selectFile = useCallback(async (name: string) => {
+    setSelected(name)
+    setLoadingContent(true)
+    setContent('')
     try {
-      const res = await fetch('/api/download?list=1')
-      const data = await res.json()
-      if (data.files) {
+      const res = await fetch(`/api/download?file=${encodeURIComponent(name)}`)
+      if (!res.ok) throw new Error('Failed to fetch')
+      setContent(await res.text())
+    } catch {
+      toast.error(`Could not load ${name}`)
+    } finally {
+      setLoadingContent(false)
+    }
+  }, [])
+
+  // Fetch the file list the first time the dialog opens.
+  useEffect(() => {
+    if (!open || files !== null) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/download?list=1')
+        const data = await res.json()
+        if (cancelled) return
         // Sort: README first, then numbered, then Full-Summary, then others
-        const sorted = (data.files as DocsFile[]).sort((a, b) => {
+        const sorted = ((data.files ?? []) as DocsFile[]).sort((a, b) => {
           if (a.name === 'README.md') return -1
           if (b.name === 'README.md') return 1
           if (a.name === 'NeuralOps-MCP-Full-Summary.md') return 1
@@ -70,45 +89,18 @@ export function DocsDialog({ open, onOpenChange }: DocsDialogProps) {
           return a.name.localeCompare(b.name)
         })
         setFiles(sorted)
-        // Auto-select README on first load
-        if (!selected && sorted.length > 0) {
-          setSelected(sorted[0].name)
+        if (sorted.length > 0) void selectFile(sorted[0].name)
+      } catch {
+        if (!cancelled) {
+          setFiles([])
+          toast.error('Could not load docs file list')
         }
       }
-    } catch (e) {
-      toast.error('Could not load docs file list')
-    } finally {
-      setLoadingList(false)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [selected])
-
-  // Fetch file content when selection changes
-  const fetchContent = useCallback(async (name: string) => {
-    setLoadingContent(true)
-    setContent('')
-    try {
-      const res = await fetch(`/api/download?file=${encodeURIComponent(name)}`)
-      if (!res.ok) throw new Error('Failed to fetch')
-      const text = await res.text()
-      setContent(text)
-    } catch (e) {
-      toast.error(`Could not load ${name}`)
-    } finally {
-      setLoadingContent(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (open && files.length === 0) {
-      fetchList()
-    }
-  }, [open, files.length, fetchList])
-
-  useEffect(() => {
-    if (selected) {
-      fetchContent(selected)
-    }
-  }, [selected, fetchContent])
+  }, [open, files, selectFile])
 
   const downloadZip = () => {
     // Direct browser download of the zip
@@ -155,9 +147,9 @@ export function DocsDialog({ open, onOpenChange }: DocsDialogProps) {
         {/* Action bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-muted/30 px-5 py-2.5">
           <div className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground">
-            <span>{files.length} files</span>
+            <span>{(files ?? []).length} files</span>
             <span aria-hidden>·</span>
-            <span>{files.reduce((s, f) => s + f.size, 0) > 0 ? formatBytes(files.reduce((s, f) => s + f.size, 0)) : '—'}</span>
+            <span>{(files ?? []).reduce((s, f) => s + f.size, 0) > 0 ? formatBytes((files ?? []).reduce((s, f) => s + f.size, 0)) : '—'}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Button
@@ -208,10 +200,10 @@ export function DocsDialog({ open, onOpenChange }: DocsDialogProps) {
             </div>
             <ScrollArea className="h-48 sm:h-[calc(85vh-180px)]">
               <ul className="py-1">
-                {files.map((f) => (
+                {(files ?? []).map((f) => (
                   <li key={f.name}>
                     <button
-                      onClick={() => setSelected(f.name)}
+                      onClick={() => void selectFile(f.name)}
                       className={cn(
                         'flex w-full items-start gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
                         'hover:bg-accent/50',

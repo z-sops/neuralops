@@ -1,5 +1,7 @@
 # NeuralOps MCP — Infrastructure & Persistence
 
+> V0.1.1: core ab `NEURALOPS_DATA_DIR/journal.jsonl` mein persist karta hai aur restart pe replay karta hai. Config env vars: §17.6.
+
 ## 11.1 Process topology
 
 ```

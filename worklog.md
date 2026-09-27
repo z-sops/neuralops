@@ -188,3 +188,34 @@ Stage Summary:
   - dev: `cd /home/z/my-project && setsid --fork bash -c 'exec bun run dev' </dev/null >>dev.log 2>&1`
   - mini-svc: `cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec bun --hot src/index.ts' </dev/null >>neuralops.log 2>&1`
 - The user previews via the Preview Panel, which routes through Caddy on port 81 → relative fetches with `?XTransformPort=3031` are correctly forwarded to the mini-service.
+
+---
+Task ID: 9 (V0.1.1 hardening)
+Agent: Claude (review + rewrite)
+Task: Review V0.1 in detail, then make it solid at the same scale (all act families, full dashboard).
+
+Review findings (reproduced live against the V0.1 build):
+- `request_approval` and `reject_handoff` crashed at runtime (payload schemas never imported); `tsc` reported 26 errors across backend + frontend, lint 7 errors (worklog said 0).
+- Authority engine bypassable: requester could authorize its own approval; deploy gate keyed on the word "production" (`prod://` bypassed it); approvals reusable forever and matched any task when taskId was null; CEO `*/*` wildcard ignored.
+- Identity: `X-Agent-Id` / default `agent.architect` let anyone act as anyone; `neuralops_register` overwrote existing agents (e.g. wiped CEO authority); unknown agents could claim tasks.
+- Logic: complete allowed while a handoff was pending (the V0.1 golden path itself did this); escalate unchecked; reset did not notify the dashboard; rejected acts still consumed sequence numbers.
+- Docs over-claimed: replay/event-sourcing (store was in-memory, no replay code), "71% verified" (chars/4 estimate vs NeuralOps' own record, not an agent transcript).
+
+Work Log:
+- Rewrote the mini-service core: single PAYLOAD_SCHEMAS registry; dispatcher validates envelope + payload, checks every precondition before mutating, restores counters on rejection, journals accepted acts.
+- Authority: direct grants (wildcards), workspace policies, task gates, approver chain, veto, separation of duties, single-use task-bound approvals.
+- Added `create_task` (23 acts), conversation TTL, `eta` on status, escalation takeover.
+- Event sourcing: JSONL journal, deterministic ids, replay on boot (refuses to boot on divergence), hash-chained ledger, `/api/integrity`.
+- Identity: bearer tokens (sha256 stored), `NEURALOPS_MODE=secure`, admin-only registration; demo impersonation marked `via: impersonated`.
+- Real MCP stdio server (`src/mcp/stdio.ts`) proxying to the core; 33 tools with schemas generated from zod.
+- Frontend: types, 10-step golden path, correct "approval required" labelling, approver badge from policies, local favicon, portable download route; fixed pre-existing tsc/lint errors (setState-in-effect patterns, nullable hook type).
+- Docs: new 17-V0.1.1-Hardening.md; rewrote 07/12/14; corrected claims in 01/03/04/06/09/10/13/16, README and Full Summary; rebuilt zip.
+
+Verification:
+- `bun test`: 55 pass / 0 fail (3 runs). Backend + frontend tsc: 0 errors. `eslint .`: 0 errors. `next build`: 0 warnings.
+- Playwright against production build: 10/10 golden-path outcomes; only console error is the intended 403 from the self-approval scenario.
+- Live restart: fresh process restored from journal with identical state hash; `/api/integrity` chainValid + replayMatches.
+
+Stage Summary:
+- Run: `cd mini-services/neuralops-mcp && bun install && bun run dev` (demo) — see its README for secure mode and MCP setup.
+- Not yet: external enforcement (CI / hooks), multi-workspace, DB-backed journal, rate limiting.

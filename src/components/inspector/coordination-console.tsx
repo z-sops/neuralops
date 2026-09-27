@@ -29,12 +29,14 @@ import { StatusDot } from './act-badge'
 export type ScenarioId =
   | 'security_claim_43'
   | 'backend_handoff_42_to_security'
-  | 'backend_complete_42_deploy_trigger'
+  | 'security_accept_42'
+  | 'security_evidence_42'
+  | 'security_complete_42_deploy_trigger'
   | 'architect_authorize_latest'
-  | 'backend_complete_42_deploy_approved'
+  | 'security_self_authorize'
+  | 'security_complete_42_deploy_approved'
   | 'qa_escalate_44_to_architect'
   | 'architect_decide_42'
-  | 'security_evidence_42'
 
 interface ScenarioDef {
   id: ScenarioId
@@ -46,6 +48,15 @@ interface ScenarioDef {
   hint?: string
 }
 
+const isOpenGateFor = (a: Approval, agentId: string) =>
+  a.taskId === 'task_42' &&
+  a.requestedBy === agentId &&
+  a.action === 'complete' &&
+  a.scope === 'production'
+
+const DEPLOY_PAYLOAD =
+  'complete { taskId: "task_42", summary: "auth module deployed", resultRef: "production://auth", evidence: [{ type: "deploy", … }] }'
+
 const SCENARIOS: ScenarioDef[] = [
   {
     id: 'security_claim_43',
@@ -55,7 +66,7 @@ const SCENARIOS: ScenarioDef[] = [
     payload: 'claim { taskId: "task_43", note: "reviewing" }',
     enabled: ({ tasks }) => {
       const t = tasks.find((x) => x.id === 'task_43')
-      return !t || t.status === 'unclaimed'
+      return !!t && t.status === 'unclaimed'
     },
     hint: 'task_43 must be unclaimed',
   },
@@ -63,88 +74,104 @@ const SCENARIOS: ScenarioDef[] = [
     id: 'backend_handoff_42_to_security',
     family: 'handoff',
     label: 'Backend → handoff task_42 to Security',
-    summary: 'backend asks security to review task_42 (intent: review).',
+    summary: 'backend offers task_42 to security for review. Ownership moves only on accept.',
     payload: 'handoff { taskId: "task_42", to: "agent.security", intent: "review" }',
     enabled: ({ tasks }) => {
       const t = tasks.find((x) => x.id === 'task_42')
       return !!t && t.assignee === 'agent.backend' && t.status === 'in_progress'
     },
-    hint: 'backend must still own task_42',
+    hint: 'backend must own task_42',
   },
   {
-    id: 'backend_complete_42_deploy_trigger',
-    family: 'task',
-    label: 'Backend → complete task_42 (deploy) [triggers approval]',
-    summary: 'backend tries to complete task_42 with production deploy evidence → authority gate fires.',
+    id: 'security_accept_42',
+    family: 'handoff',
+    label: 'Security → accept handoff of task_42',
+    summary: 'security accepts and becomes the owner of task_42.',
+    payload: 'accept_handoff { taskId: "task_42" }',
+    enabled: ({ tasks }) => {
+      const t = tasks.find((x) => x.id === 'task_42')
+      return !!t && t.status === 'handoff_pending' && t.pendingHandoffTo === 'agent.security'
+    },
+    hint: 'handoff to security must be pending',
+  },
+  {
+    id: 'security_evidence_42',
+    family: 'information',
+    label: 'Security → record review evidence on task_42',
+    summary: 'security records a review-passed evidence artifact on task_42.',
     payload:
-      'complete { taskId: "task_42", summary: "auth module deployed", resultRef: "production://auth", evidence: [{ type: "deploy", … }] }',
+      'evidence { taskId: "task_42", type: "review", summary: "security review passed", ref: "review://task_42/sec" }',
+    enabled: ({ tasks }) => {
+      const t = tasks.find((x) => x.id === 'task_42')
+      return !!t && t.status !== 'completed'
+    },
+    hint: 'task_42 must be open',
+  },
+  {
+    id: 'security_complete_42_deploy_trigger',
+    family: 'task',
+    label: 'Security → complete task_42 (deploy) [triggers approval]',
+    summary: 'task_42 is gated complete/production → the authority gate fires instead of completing.',
+    payload: DEPLOY_PAYLOAD,
     enabled: ({ tasks, approvals }) => {
       const t = tasks.find((x) => x.id === 'task_42')
-      if (!t || t.assignee !== 'agent.backend') return false
-      if (t.status === 'completed') return false
-      // Don't trigger the approval gate twice.
-      const existing = approvals.find(
-        (a) => a.taskId === 'task_42' && a.action === 'complete' && a.scope === 'production',
+      if (!t || t.assignee !== 'agent.security' || t.status !== 'in_progress') return false
+      return !approvals.some(
+        (a) => isOpenGateFor(a, 'agent.security') && (a.status === 'pending' || (a.status === 'approved' && !a.consumedAt)),
       )
-      return !existing
     },
-    hint: 'no prior production-complete approval on task_42',
+    hint: 'security owns task_42, no open gate approval',
   },
   {
     id: 'architect_authorize_latest',
     family: 'authority',
     label: 'Architect → authorize latest approval',
-    summary: 'architect authorizes the most recent pending approval (smart button).',
+    summary: 'the named approver authorizes the most recent pending approval.',
     payload: 'authorize { approvalId: <latest pending> }',
-    enabled: ({ approvals }) =>
-      approvals.some((a) => a.status === 'pending'),
+    enabled: ({ approvals }) => approvals.some((a) => a.status === 'pending'),
     hint: 'requires a pending approval',
   },
   {
-    id: 'backend_complete_42_deploy_approved',
+    id: 'security_self_authorize',
+    family: 'authority',
+    label: 'Security → authorize its OWN approval [must be rejected]',
+    summary: 'separation of duties: a requester can never approve its own request.',
+    payload: 'authorize { approvalId: <security’s pending approval> }  // from: agent.security',
+    enabled: ({ approvals }) =>
+      approvals.some((a) => a.status === 'pending' && a.requestedBy === 'agent.security'),
+    hint: 'security must have a pending approval',
+  },
+  {
+    id: 'security_complete_42_deploy_approved',
     family: 'task',
-    label: 'Backend → complete task_42 (deploy, now approved)',
-    summary: 'backend retries complete-with-deploy — hasApprovedApproval is now true → task → completed.',
-    payload: 'complete { taskId: "task_42", summary: "auth module deployed", resultRef: "production://auth", … }',
+    label: 'Security → complete task_42 (deploy, now approved)',
+    summary: 'the approved approval is consumed (single-use) → task_42 → completed.',
+    payload: DEPLOY_PAYLOAD,
     enabled: ({ tasks, approvals }) => {
       const t = tasks.find((x) => x.id === 'task_42')
-      if (!t || t.status === 'completed') return false
-      const approved = approvals.find(
-        (a) =>
-          a.taskId === 'task_42' &&
-          a.action === 'complete' &&
-          a.scope === 'production' &&
-          a.status === 'approved',
-      )
-      return !!approved
+      if (!t || t.status !== 'in_progress' || t.assignee !== 'agent.security') return false
+      return approvals.some((a) => isOpenGateFor(a, 'agent.security') && a.status === 'approved' && !a.consumedAt)
     },
-    hint: 'requires an approved production-complete approval',
+    hint: 'requires an approved, unused approval',
   },
   {
     id: 'qa_escalate_44_to_architect',
     family: 'authority',
     label: 'QA → escalate task_44 to Architect',
-    summary: 'qa escalates the blocked CI task to the architect.',
+    summary: 'qa (owner) escalates the blocked CI task; the architect may then take it over by claiming.',
     payload: 'escalate { taskId: "task_44", reason: "DevOps unresponsive", to: "agent.architect" }',
-    enabled: ({ tasks }) => !!tasks.find((x) => x.id === 'task_44'),
-    hint: 'task_44 must exist',
+    enabled: ({ tasks }) => {
+      const t = tasks.find((x) => x.id === 'task_44')
+      return !!t && t.assignee === 'agent.qa' && t.status !== 'completed' && t.escalatedTo !== 'agent.architect'
+    },
+    hint: 'qa must own task_44',
   },
   {
     id: 'architect_decide_42',
     family: 'information',
     label: 'Architect → decide on task_42',
-    summary: 'architect records a decision to approve task_42 for production deploy.',
+    summary: 'architect records a durable decision on task_42.',
     payload: 'decision { taskId: "task_42", text: "approved for production deploy", rationale: "review passed" }',
-    enabled: ({ tasks }) => !!tasks.find((x) => x.id === 'task_42'),
-    hint: 'task_42 must exist',
-  },
-  {
-    id: 'security_evidence_42',
-    family: 'information',
-    label: 'Security → record evidence on task_42',
-    summary: 'security records a review-passed evidence artifact on task_42.',
-    payload:
-      'evidence { taskId: "task_42", type: "review", summary: "security review passed", ref: "review://task_42/sec" }',
     enabled: ({ tasks }) => !!tasks.find((x) => x.id === 'task_42'),
     hint: 'task_42 must exist',
   },
@@ -210,6 +237,19 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
       let from: string
       let payload: Record<string, unknown>
 
+      const deployPayload = {
+        taskId: 'task_42',
+        summary: 'Auth module deployed to production',
+        resultRef: 'production://auth-module/v1',
+        evidence: [
+          {
+            type: 'deploy',
+            summary: 'deployed to production://auth-module/v1',
+            ref: 'production://auth-module/v1',
+          },
+        ],
+      }
+
       switch (id) {
         case 'security_claim_43':
           type = 'claim'
@@ -221,22 +261,26 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
           from = 'agent.backend'
           payload = { taskId: 'task_42', to: 'agent.security', intent: 'review' }
           break
-        case 'backend_complete_42_deploy_trigger':
-        case 'backend_complete_42_deploy_approved':
-          type = 'complete'
-          from = 'agent.backend'
+        case 'security_accept_42':
+          type = 'accept_handoff'
+          from = 'agent.security'
+          payload = { taskId: 'task_42' }
+          break
+        case 'security_evidence_42':
+          type = 'evidence'
+          from = 'agent.security'
           payload = {
             taskId: 'task_42',
-            summary: 'Auth module deployed to production',
-            resultRef: 'production://auth-module/v1',
-            evidence: [
-              {
-                type: 'deploy',
-                summary: 'deployed to production://auth-module/v1',
-                ref: 'production://auth-module/v1',
-              },
-            ],
+            type: 'review',
+            summary: 'Security review passed — no critical issues found.',
+            ref: 'review://task_42/security',
           }
+          break
+        case 'security_complete_42_deploy_trigger':
+        case 'security_complete_42_deploy_approved':
+          type = 'complete'
+          from = 'agent.security'
+          payload = deployPayload
           break
         case 'architect_authorize_latest':
           if (!latestPendingApproval) {
@@ -251,6 +295,17 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
           from = latestPendingApproval.approver
           payload = { approvalId: latestPendingApproval.id }
           break
+        case 'security_self_authorize': {
+          const own = approvals.find((a) => a.status === 'pending' && a.requestedBy === 'agent.security')
+          if (!own) {
+            setBusyId(null)
+            return
+          }
+          type = 'authorize'
+          from = 'agent.security'
+          payload = { approvalId: own.id }
+          break
+        }
         case 'qa_escalate_44_to_architect':
           type = 'escalate'
           from = 'agent.qa'
@@ -267,16 +322,6 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
             taskId: 'task_42',
             text: 'Approved for production deploy.',
             rationale: 'Security review passed; CI is green; constraints met.',
-          }
-          break
-        case 'security_evidence_42':
-          type = 'evidence'
-          from = 'agent.security'
-          payload = {
-            taskId: 'task_42',
-            type: 'review',
-            summary: 'Security review passed — no critical issues found.',
-            ref: 'review://task_42/security',
           }
           break
         default:
@@ -474,6 +519,11 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
                             {agentNameById.get(a.approver) ?? a.approver}
                           </span>
                         </span>
+                        {a.consumedBy && (
+                          <span>
+                            used by: <span className="font-mono text-foreground">{a.consumedBy}</span>
+                          </span>
+                        )}
                         {a.decidedBy && (
                           <span>
                             decidedBy:{' '}
@@ -525,7 +575,7 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
                           <AlertCircleIcon className="size-4 text-slate-500" aria-hidden />
                         )}
                         <span className="font-mono text-[10px] uppercase text-muted-foreground">
-                          resolved
+                          {a.status === 'approved' ? (a.consumedAt ? 'used' : 'ready to use') : 'resolved'}
                         </span>
                       </div>
                     )}
@@ -567,6 +617,12 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
   )
 }
 
+// A result is an authority gate only when it returns a still-pending approval
+// without changing task state (authorize/complete also return approvals).
+function isGate(result: { approval?: Approval | null; stateChanged: boolean }): boolean {
+  return !!result.approval && result.approval.status === 'pending' && !result.stateChanged
+}
+
 function ResultRow({
   result,
   agentNameById,
@@ -579,14 +635,14 @@ function ResultRow({
       className={cn(
         'mt-2 flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-[11px]',
         result.ok
-          ? result.approval
+          ? isGate(result)
             ? 'border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-200'
             : 'border-emerald-500/40 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200'
           : 'border-rose-500/40 bg-rose-500/5 text-rose-800 dark:text-rose-200',
       )}
     >
       {result.ok ? (
-        result.approval ? (
+        isGate(result) ? (
           <ClockIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
         ) : (
           <CheckCircle2Icon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -598,7 +654,7 @@ function ResultRow({
         <div className="flex items-center gap-1.5">
           <span className="font-mono uppercase">
             {result.ok
-              ? result.approval
+              ? isGate(result)
                 ? 'approval required'
                 : 'ok'
               : 'failed'}
@@ -609,7 +665,8 @@ function ResultRow({
         </div>
         {result.approval && (
           <p className="mt-0.5 font-mono text-[10px] opacity-80">
-            {result.approval.id} · approver: {agentNameById.get(result.approval.approver) ?? result.approval.approver}
+            {result.approval.id} · {result.approval.status}
+            {result.approval.consumedBy ? ' · used' : ''} · approver: {agentNameById.get(result.approval.approver) ?? result.approval.approver}
           </p>
         )}
         {result.error && (

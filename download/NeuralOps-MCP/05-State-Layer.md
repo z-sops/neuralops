@@ -1,5 +1,7 @@
 # NeuralOps MCP — State Layer
 
+> V0.1.1: naye fields: Task `gates`, `eta`, `escalatedTo`, `createdBy`; Approval `consumedAt`, `consumedBy`; LedgerEvent `via`, `prevHash`, `hash`; workspace `policies`. Source of truth ab act **journal** hai (replay se har view dobara banta hai). Dekhein `17-V0.1.1-Hardening.md` §17.5.
+
 ## 5.1 Entities
 
 ### Workspace

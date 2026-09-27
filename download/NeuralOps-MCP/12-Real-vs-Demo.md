@@ -1,84 +1,42 @@
 # NeuralOps MCP — Real vs Demo
 
-## 12.1 What's REAL
+> V0.1.1 status. V0.1 ki list mein kuch "✅ Real" items asal mein broken thay (dekhein `17-V0.1.1-Hardening.md` §17.1). Yeh list tests se verified hai.
 
-| Component | Real? | Notes |
-|-----------|-------|-------|
-| Coordination Core (backend) | ✅ Real | Actually mutates state, records ledger, enforces authority |
-| Typed acts protocol | ✅ Real | 22 act types, zod-validated payloads, before/after deltas |
-| Authority/approval engine | ✅ Real | Production deploy actually blocks until architect approves |
-| Context compaction | ✅ Real | 71% reduction on demo task, real numbers from API |
-| Work Ledger | ✅ Real | Immutable append-only, every mutation captured |
-| WebSocket live updates | ✅ Real | Ledger updates instantly when acts fire |
-| MCP tool registry | ✅ Real | 15 tools defined with typed input schemas |
-| HTTP REST API | ✅ Real | All endpoints functional |
-| Demo workspace | ✅ Real (data) | Pre-seeded agents/tasks with realistic history |
-| Dashboard | ✅ Real | Live updates, real compaction numbers, working buttons |
+## 12.1 What's REAL (tested)
 
-## 12.2 What's NOT YET (demo placeholders)
+| Component | Status | Detail |
+|-----------|--------|--------|
+| Coordination Core | ✅ Real | Validate → check → mutate → ledger → journal. Rejected acts leave no trace. |
+| Typed acts protocol | ✅ Real | 23 act types, 6 families, har ek ka zod payload; saare 23 ek test mein chalte hain |
+| Authority / approvals | ✅ Real | Policies + task gates, approver chain, veto, separation of duties, single-use task-bound approvals |
+| Identity | ✅ Real | Bearer tokens (sha256 stored), secure mode, demo impersonation clearly marked |
+| Persistence | ✅ Real | JSONL journal, replay on boot, torn-line tolerance, divergence refusal |
+| Immutable ledger | ✅ Real | Hash-chained; tampering detected by `/api/integrity` |
+| Context compaction | ✅ Real (estimate) | ~70% on fresh seed, ~81% after golden path; chars/4 estimate, labelled |
+| MCP transport | ✅ Real | stdio server via `@modelcontextprotocol/sdk`; 2 agents in 2 processes tested |
+| MCP tool registry | ✅ Real | 33 tools, schemas generated from zod |
+| HTTP REST + WebSocket | ✅ Real | Proper status codes, body limit, WS auth in secure mode |
+| Dashboard | ✅ Real | Browser-tested golden path (10 steps) |
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Actual AI agents (Claude/Codex) | ❌ Demo | "Agents" are data structures. User plays their role via UI buttons |
-| Real MCP transport (stdio/SSE) | ❌ Not yet | Currently HTTP REST. V0.2 will add `@modelcontextprotocol/sdk` adapter |
-| Persistent database | ❌ Not yet | In-memory store. V0.2 will use Prisma |
-| Multi-workspace / multi-tenant | ❌ Not yet | Single workspace. V0.3 |
-| Real tokenizers | ❌ Approximate | chars/4 heuristic. Per-model tokenizers in V0.2 |
-| Cost / token tracking UI | ❌ Not exposed | Engine tracks internally, no dashboard panel yet |
-| Artifact store (S3) | ❌ Not yet | Evidence `ref` field points to external locations, but no managed artifact storage |
+## 12.2 Demo parts
 
-## 12.3 The bottom line
+| Component | Status | Detail |
+|-----------|--------|--------|
+| Demo agents | Demo | Seed ke 5 agents data hain; UI buttons unki taraf se acts bhejte hain (`via: impersonated`). Asli agents ab MCP se connect ho sakte hain. |
+| Demo tokens | Demo only | `nops_demo_*` guessable hain; secure mode mein demo seed hota hi nahi |
 
-> **Protocol is real, demo agents are fake.**
+## 12.3 NOT YET
 
-A real agent (Claude Code) connecting via MCP would make the same `neuralops.claim_task()` calls that the UI buttons make. Backend doesn't know the difference.
+| Component | Status | Detail |
+|-----------|--------|--------|
+| External enforcement | ❌ | Gate abhi agent ke `complete` call pe hai. GitHub required check / Claude Code hooks roadmap pe |
+| Multi-workspace / multi-tenant | ❌ | Single workspace |
+| Real tokenizers | ❌ Approximate | chars/4 |
+| Multi-instance storage | ❌ | Journal single-process JSONL file |
+| Rate limiting | ❌ | — |
+| Cost / token tracking UI | ❌ | — |
+| Artifact store (S3) | ❌ | Evidence `ref` sirf external location point karta hai |
 
-## 12.4 Why this matters
+## 12.4 Bottom line
 
-When V0.2 ships real MCP transport:
-
-1. Customer installs NeuralOps MCP server
-2. Customer connects their Claude Code (via MCP config)
-3. Claude Code sees `neuralops_*` tools available
-4. Claude Code calls `neuralops_claim_task("task_42")` — same as UI button
-5. Coordination Core processes the act — same as now
-6. Ledger records the event — same as now
-7. Other connected agents see the update via WS — same as now
-
-**Zero changes to Coordination Core.** Only transport adapter changes.
-
-## 12.5 What an agent (Claude Code) would see
-
-After connecting via MCP, Claude Code's tool list would include:
-
-```python
-# Available MCP tools:
-neuralops_register(name, model, role, reports_to?)
-neuralops_workspace()  → returns { workspace, agents, tasks, approvals }
-neuralops_tasks(status?)
-neuralops_claim(task_id, note?)
-neuralops_complete(task_id, summary, result_ref?, evidence?)
-neuralops_handoff(task_id, to, intent)
-neuralops_accept_handoff(task_id)
-neuralops_decision(task_id, text, rationale?)
-neuralops_evidence(task_id, type, summary, ref)
-neuralops_request_approval(action, scope, task_id?)
-neuralops_authorize(approval_id)
-neuralops_deny(approval_id, reason)
-neuralops_escalate(task_id, reason, to)
-neuralops_get_task_context(task_id)  → returns compacted context
-neuralops_get_evidence(evidence_id)
-neuralops_get_decision(decision_id)
-```
-
-Claude Code (or any MCP-aware agent) would use these like any other tool — picking the right one based on context.
-
-## 12.6 The honest demo disclaimer
-
-> Yeh V0.1 sirf protocol dikhane ke liye banaya hai. Iska matlab:
->
-> ✅ Protocol works — acts, state mutation, ledger, authority, compaction — sab chal raha hai
-> ✅ Dashboard works — live updates, compaction numbers real hain (API se aate hain)
-> ⚠️ Isme abhi asli AI agents nahi hain — tum manually buttons se unka role play karte ho
->
-> Yaani: **protocol real hai, demo agents fake hain.**
+> **Protocol real hai, enforcement real hai (NeuralOps ke andar), aur agents ab asli MCP se connect ho sakte hain.** Agla bara qadam: gate ko agent ke bahar enforce karna (CI / merge / deploy path).

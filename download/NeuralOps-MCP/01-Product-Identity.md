@@ -39,7 +39,7 @@ NeuralOps Context Engine
 Agent B
 ```
 
-**71% token reduction** demo mein verified. Bade conversations mein 90%+.
+**~70–81% token reduction** demo pe (chars/4 estimate, NeuralOps ke apne record vs compacted snapshot). Asli agent transcript pe benchmark abhi baaki hai.
 
 ## 1.5 What NeuralOps is NOT
 

@@ -1,7 +1,7 @@
 # NeuralOps MCP — Mukammal Product Summary
 
 > **AI Workforce Coordination Protocol**
-> V0.1 — Complete Product Documentation
+> V0.1.1 — Hardened build. Kya badla: `17-V0.1.1-Hardening.md`
 
 ---
 
@@ -46,7 +46,7 @@ NeuralOps Context Engine
 Agent B
 ```
 
-**71% token reduction** demo mein verified. Bade conversations mein 90%+.
+Demo pe **~70–81% kam tokens** (chars/4 estimate; NeuralOps ke apne record vs compacted snapshot). Asli agent transcript pe benchmark abhi baaki hai.
 
 ---
 
@@ -131,7 +131,7 @@ Har agent apne dimagh mein apna context rakhta hai. Aapas mein connect nahi.
 > **MCP is the standardized door through which existing agents access the coordination engine.**
 
 - Coordination Core MCP se independent hai
-- MCP ek transport hai (HTTP abhi, stdio/SSE future mein)
+- MCP ek transport hai: stdio server (`src/mcp/stdio.ts`) ab real hai; HTTP bhi
 - Core ko kisi bhi transport pe baitha sakte hain
 - Customer ke agents ko MCP support karna chahiye bas
 
@@ -169,12 +169,13 @@ Agent sirf "complete task 42" bolta hai. NeuralOps internally:
 
 **Important:** `payload` deliberately small hai. Rich state Coordination Core mein rehta hai.
 
-## 4.3 6 Act Families — 22 Act Types
+## 4.3 6 Act Families — 23 Act Types
 
 ### Family 1: TASK (emerald) — Lifecycle mutations
 
 | Act | Purpose | Payload |
 |-----|---------|---------|
+| `create_task` | Open a task (V0.1.1) | `{id?, title, objective, constraints?, openItems?, nextSteps?, gates?}` |
 | `claim` | Agent takes ownership | `{taskId, note?}` |
 | `release` | Agent gives up task | `{taskId, reason}` |
 | `complete` | Mark complete (may trigger approval) | `{taskId, summary, resultRef?, evidence?[]}` |
@@ -306,7 +307,10 @@ Conversation
   seq: number                // monotonic
   workspaceId: string
   actId: string
-  actType: ActType           // one of 22
+  actType: ActType           // one of 23
+  via: 'token'|'impersonated'|'system'
+  prevHash: string           // hash chain
+  hash: string
   actor: string
   taskId: string | null
   before: Record             // snapshot BEFORE
@@ -321,7 +325,7 @@ Conversation
 
 > **Work Ledger is a VIEW. Event Stream is the SOURCE OF TRUTH.**
 
-Task state, decisions, evidence — materialized views hain ek immutable event stream ke upar. Replay se pura state reconstruct ho sakta hai.
+V0.1.1: act **journal** (`data/journal.jsonl`) source of truth hai. Boot pe replay se har view bilkul wahi banta hai (same state hash); ledger hash-chained hai; `/api/integrity` dono check karta hai. (V0.1 mein yeh claim sach nahi tha: store in-memory tha aur replay ka koi code nahi tha.)
 
 ---
 
@@ -343,11 +347,14 @@ processAct(input) flow:
 
 ## 6.2 Authority Engine
 
-3 core functions:
+V0.1.1 model:
 
-- `hasAuthority(agentId, action, scope)` — direct grant check
-- `approvalRequired(agentId, action, scope)` — gatekeeping check (returns approver)
-- `hasApprovedApproval(agentId, action, scope, taskId)` — flow continuation (request → authorize → complete)
+- **Direct grants** on agents (`*` wildcards honoured, jaise CEO `*/*`)
+- **Policies** in workspace: `{action, scope, approver}`; policy na ho to requester ka manager approver
+- **Task gates**: `task.gates` (e.g. `complete/production`), gate agent ke lafzon se nahi, task se aata hai
+- **authorize:** named approver / upar ki reporting chain / wildcard holder, **requester kabhi nahi**
+- **deny:** upar wale + `deny` veto authority (Security)
+- **Single-use, task-bound approvals** (`consumedAt`, `consumedBy`)
 
 ## 6.3 Context Engine — **THE KILLER FEATURE**
 
@@ -382,15 +389,15 @@ NEXT
 OWNER: agent.backend   STATUS: in_progress
 ```
 
-**~400 tokens.**
+**~340 tokens** on fresh seed (estimate).
 
 ### `getFullContext(taskId)` — without compaction
 
 Full task object + all decisions + all evidence + all act log events.
 
-**~1,363 tokens.**
+**~1,100 tokens** on fresh seed (estimate); grows with the act log.
 
-### Reduction: **71%**
+### Reduction: **~70% (fresh seed) → ~81% (after golden path)**, chars/4 estimate
 
 ### On-demand deep retrieval
 
@@ -424,50 +431,24 @@ NeuralOps ke saath — compacted context:
 
 # BHAAG 7: MCP TOOL REGISTRY
 
-## 7.1 15 tools
+## 7.1 33 tools
 
-### Lifecycle / Workspace
-- `neuralops_register` — register agent
-- `neuralops_workspace` — get workspace state
-- `neuralops_tasks` — list tasks
-
-### Task Lifecycle
-- `neuralops_claim` — claim task
-- `neuralops_complete` — mark complete
-
-### Handoff
-- `neuralops_handoff` — handoff with intent
-- `neuralops_accept_handoff` — accept pending
-
-### Information
-- `neuralops_decision` — record decision
-- `neuralops_evidence` — record evidence
-
-### Authority
-- `neuralops_request_approval`
-- `neuralops_authorize`
-- `neuralops_deny`
-- `neuralops_escalate`
-
-### Context Retrieval
-- `neuralops_get_task_context` — compacted context
-- `neuralops_get_evidence` — on-demand
-- `neuralops_get_decision` — on-demand
+- **10 query tools:** `neuralops_inbox` (pehle yahi), `get_task_context`, `get_full_context`, `get_evidence`, `get_decision`, `get_original_context`, `whoami`, `workspace`, `tasks`, `register`
+- **23 act tools:** `neuralops_<act>` har act type ke liye; optional `references[]` aur `actId` (idempotency)
+- Act tool schemas usi zod schema se generate hote hain jis se dispatcher validate karta hai, is liye drift nahi hota
 
 ## 7.2 Critical design choice
 
 > `send_message("...")` is NOT the primary API.
 > Freeform communication is an escape hatch.
 
-## 7.3 Transport abstraction
+## 7.3 Transport
 
-Handlers same hain — `callTool(name, args, caller)` kisi bhi transport pe:
+```
+Agent (Claude Code / Codex / Gemini CLI) ──MCP stdio──► src/mcp/stdio.ts ──HTTP+Bearer──► Core :3031
+```
 
-- HTTP REST (V0.1 — current)
-- MCP stdio (V0.2 — for Claude Code, Codex CLI)
-- MCP streamable HTTP (V0.2 — for cloud agents)
-
-**Handlers don't change. Transport is a thin adapter.**
+`stdio.ts` stateless hai, is liye alag processes ke agents ek workspace share karte hain. Setup: `17-V0.1.1-Hardening.md` §17.7.
 
 ---
 
@@ -490,6 +471,8 @@ Handlers same hain — `callTool(name, args, caller)` kisi bhi transport pe:
 | `GET /api/families` | Act type → family + color |
 | `GET /api/evidence?id=X` | Specific evidence |
 | `GET /api/decisions?id=X` | Specific decision |
+
+V0.1.1 additions: `GET /api/health`, `/api/whoami`, `/api/inbox`, `/api/policies`, `/api/integrity`, `/api/demo/tokens`; `POST /api/agents`. Bearer auth; status codes 400/401/403/404/409/413.
 
 ## 8.2 POST endpoints
 
@@ -523,28 +506,33 @@ fetch('http://localhost:3031/api/state')  ❌ FORBIDDEN
 | ID | Name | Model | Role | Reports To | Authority |
 |----|------|-------|------|------------|-----------|
 | `agent.ceo` | CEO | Claude | ceo | (none) | wildcard |
-| `agent.architect` | Architect | Claude | architect | CEO | deploy/complete production + gatekeeper |
+| `agent.architect` | Architect | Claude | architect | CEO | deploy/complete production + govern; policy approver |
 | `agent.backend` | Backend Dev | Codex | backend | Architect | none |
 | `agent.qa` | QA Engineer | Gemini | qa | Architect | none |
-| `agent.security` | Security | Qwen | security | CEO | deny/deploy |
+| `agent.security` | Security | Qwen | security | CEO | veto: deny/production |
 
 ## 9.2 Pre-seeded tasks
 
-- **task_42** — "Build authentication module" (in_progress, 65%, 2 decisions, 2 evidence, prior handoff history)
+- **task_42** — "Build authentication module" (in_progress, 65%, 2 decisions, 2 evidence, prior handoff history, **gated complete/production**)
 - **task_43** — "Security review of auth module" (unclaimed)
 - **task_44** — "Set up CI pipeline" (blocked, waiting on DevOps)
 
-## 9.3 Golden path (5 steps)
+## 9.3 Golden path (10 steps, V0.1.1)
 
 ```
-1. Security → claim task_43                  → task_43 in_progress
-2. Backend → handoff task_42 to Security     → task_42 handoff_pending
-3. Backend → complete task_42 (deploy)       → APPROVAL GATE fires
-4. Architect → authorize latest approval     → approval approved
-5. Backend → complete task_42 (now approved) → task_42 completed
+1. Security → claim task_43                     → task_43 in_progress
+2. Backend → handoff task_42 to Security        → handoff_pending
+3. Security → accept_handoff task_42            → Security owns task_42
+4. Security → evidence (review passed)
+5. Security → complete task_42 (deploy)         → APPROVAL GATE (task gate + policy)
+6. Security → authorize its own approval        → 403 (separation of duties)
+7. Architect → authorize                        → approved
+8. Security → complete task_42                  → completed, approval consumed
+9. QA → escalate task_44 to Architect
+10. Architect → decision on task_42
 ```
 
-Final: 11 ledger events, 71% compaction, zero console errors.
+Browser-tested (Playwright): all 10 outcomes as expected; only console error = the intended 403.
 
 ---
 
@@ -560,7 +548,7 @@ Final: 11 ledger events, 71% compaction, zero console errors.
 1. **Header (sticky)** — wordmark + connection pill + Reset demo + architecture strip
 2. **The Workforce** — agent cards + task cards
 3. **Coordination Console** — 8 scenario buttons + Pending Approvals sub-panel
-4. **Shared Work State — Context Compaction** — side-by-side Full vs Compacted panels + "−71%" banner
+4. **Shared Work State — Context Compaction** — side-by-side Full vs Compacted panels + "−N%" banner
 5. **Work Ledger** — live reverse-chronological event stream with colored badges
 6. **Footer (sticky bottom)** — V0.1 demo tagline + connection + port note
 
@@ -611,36 +599,40 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 
 # BHAAG 12: REAL vs DEMO
 
-## 12.1 What's REAL
+## 12.1 What's REAL (V0.1.1, tested)
 
-- ✅ Coordination Core (backend)
-- ✅ Typed acts protocol (22 types)
-- ✅ Authority/approval engine
-- ✅ Context compaction (71% verified)
-- ✅ Work Ledger (immutable)
-- ✅ WebSocket live updates
-- ✅ MCP tool registry (15 tools)
-- ✅ HTTP REST API
-- ✅ Dashboard (live, real numbers)
+- ✅ Coordination Core: validate → check → mutate → ledger → journal; rejected acts leave no trace
+- ✅ 23 typed acts (all exercised in one test)
+- ✅ Authority: policies, gates, approver chain, veto, separation of duties, single-use approvals
+- ✅ Bearer-token identity + secure mode
+- ✅ Persistence: JSONL journal + replay on restart
+- ✅ Hash-chained ledger + `/api/integrity`
+- ✅ Real MCP stdio transport, 33 tools
+- ✅ Context compaction (estimate, labelled)
+- ✅ Dashboard: browser-tested golden path
 
 ## 12.2 What's NOT YET
 
-- ❌ Actual AI agents (demo uses data structures)
-- ❌ Real MCP transport (HTTP REST now, MCP stdio/SSE in V0.2)
-- ❌ Persistent database (in-memory now, Prisma in V0.2)
-- ❌ Multi-workspace (single workspace now)
-- ❌ Real tokenizers (chars/4 heuristic now)
-- ❌ Cost/token tracking UI
-- ❌ Artifact store (S3)
+- ❌ External enforcement (GitHub required check / Claude Code hooks); gate abhi NeuralOps ke andar hai
+- ❌ Multi-workspace / multi-tenant
+- ❌ Real tokenizers (chars/4 now)
+- ❌ DB-backed journal for multiple instances
+- ❌ Rate limiting, cost/token tracking UI, artifact store
 
 ## 12.3 Bottom line
 
-> **Protocol is real, demo agents are fake.**
-> A real agent (Claude Code) connecting via MCP would make the same `neuralops.claim_task()` calls that the UI buttons make. Backend doesn't know the difference.
+> **Protocol real hai, NeuralOps ke andar enforcement real hai, aur asli agents MCP se connect ho sakte hain.** Agla qadam: gate ko agent ke bahar enforce karna.
 
 ---
 
 # BHAAG 13: ROADMAP
+
+## V0.1.1 — Hardening (DONE)
+- [x] Real MCP transport (`@modelcontextprotocol/sdk`, stdio)
+- [x] Persistent journal + replay
+- [x] Auth (bearer tokens, secure mode)
+- [x] Conversation TTL
+- [x] Replay / integrity check
 
 ## V0.2 — Real Agent Integration
 - [ ] Real MCP transport (`@modelcontextprotocol/sdk`)
@@ -667,29 +659,19 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 
 ---
 
-# BHAAG 14: VERIFICATION STATUS
-
-## 14.1 Browser-verified end-to-end
+# BHAAG 14: VERIFICATION STATUS (V0.1.1)
 
 | Check | Result |
 |-------|--------|
-| Page renders | ✅ Title correct, zero console errors |
-| All 5 sections | ✅ Workforce, Console, Compaction, Ledger, Footer |
-| Golden path step 1 (claim) | ✅ task_43 → in_progress |
-| Golden path step 2 (handoff) | ✅ task_42 → handoff_pending |
-| Golden path step 3 (complete deploy) | ✅ Approval gate fired |
-| Golden path step 4 (authorize) | ✅ Approval approved |
-| Golden path step 5 (complete approved) | ✅ task_42 completed, 100% |
-| Compaction | ✅ 1363 → 398 tokens, 71% reduction |
-| Live ledger | ✅ Updates instantly |
-| Reset demo | ✅ Clean state restored |
-| Lint | ✅ 0 errors |
+| Backend + frontend `tsc` | ✅ 0 errors (V0.1: 26) |
+| `eslint .` | ✅ 0 errors (V0.1: 7, although docs said 0) |
+| `bun test` | ✅ 55 pass / 0 fail |
+| `next build` | ✅ 0 warnings |
+| Browser golden path | ✅ 10/10 |
+| MCP stdio, 2 agents | ✅ |
+| `/api/integrity` | ✅ chainValid, replayMatches |
 
-## 14.2 Service health
-
-- Dev server (3000): HTTP 200
-- Mini-service (3031): HTTP 200
-- Caddy (81): HTTP 200
+Details + re-verify commands: `14-Verification.md`.
 
 ---
 
@@ -719,7 +701,7 @@ mini-services/neuralops-mcp/
 └── src/
     ├── index.ts                          # bootstrap
     ├── protocol/
-    │   ├── act-types.ts                  # 22 acts, 6 families
+    │   ├── act-types.ts                  # 23 acts, 6 families
     │   ├── envelope.ts                   # Act envelope + zod
     │   └── payloads.ts                   # per-act payloads
     ├── state/
@@ -778,11 +760,11 @@ src/
 
 # FINAL ONE-LINER
 
-> **NeuralOps MCP V0.1 = a working coordination protocol for AI workers, with 22 typed acts, immutable ledger, authority/approval gating, and context compaction that demonstrably reduces token transfer by 71% — all browser-verified end-to-end against a realistic Engineering workspace demo.**
+> **NeuralOps MCP V0.1.1 = a working coordination protocol for AI workers: 23 typed acts, a hash-chained ledger backed by a replayable journal, an authority engine with single-use approvals that agents cannot self-grant, a real MCP stdio server with 33 tools, and context compaction (~70–81% on the demo, estimated), covered by 55 automated tests and a browser-tested golden path.**
 
 ---
 
-**Generated:** V0.1 demo build
+**Generated:** V0.1 demo build · **Hardened:** V0.1.1
 **Live demo:** Preview Panel → `/` route
 **Backend:** `mini-services/neuralops-mcp/` (port 3031)
 **Frontend:** `src/app/page.tsx` (port 3000, served via Caddy :81)

@@ -1,5 +1,7 @@
 # NeuralOps MCP — API Reference
 
+> V0.1.1: naye endpoints (`/api/health`, `/api/whoami`, `/api/inbox`, `/api/policies`, `/api/integrity`, `/api/demo/tokens`, `POST /api/agents`), Bearer auth, aur proper status codes. Dekhein `17-V0.1.1-Hardening.md` §17.6 + §17.10.
+
 ## 8.1 GET endpoints
 
 | Endpoint | Returns |

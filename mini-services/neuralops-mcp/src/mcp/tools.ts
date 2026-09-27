@@ -1,26 +1,29 @@
 // MCP Tool Registry
 //
-// This is the tool surface NeuralOps exposes to AI workers via MCP.
-// Each entry mirrors a NeuralOps MCP tool an agent (Claude Code, Codex, etc.)
-// would call. The handlers route into the Coordination Core (task-manager +
-// authority + context).
+// One tool per act type (`neuralops_<act>`, 23 total) plus query tools.
+// Act tool input schemas are generated from PAYLOAD_SCHEMAS, so the tool
+// surface can never drift from what the dispatcher validates.
 //
-// In V0.1 these are invoked via HTTP REST. Wrapping them with a real MCP
-// transport (stdio / streamable-HTTP via @modelcontextprotocol/sdk) is a
-// thin adapter — the handlers don't change.
+// The same callTool() serves the HTTP door (/api/tools/:name) and — through
+// src/mcp/stdio.ts — a real MCP stdio transport for Claude Code, Codex, etc.
 
-import { processAct } from '../engines/task-manager.js'
+import { z } from 'zod'
+import { processAct, type ActResult } from '../engines/task-manager.js'
 import {
   getCompactedContext,
-  getFullContext,
-  getContextComparison,
-  getEvidenceById,
   getDecisionById,
+  getEvidenceById,
+  getFullContext,
+  getInbox,
   getOriginalContext,
+  formatCompactedContext,
 } from '../engines/context.js'
+import { registerAgent, RegisterSchema } from '../engines/agents.js'
 import { store } from '../state/store.js'
-import type { ActInput } from '../protocol/envelope.js'
-import { ACT_TYPES, ACT_FAMILY, FAMILY_DESCRIPTION } from '../protocol/act-types.js'
+import { ACT_DESCRIPTION, ACT_FAMILY, ACT_TYPES, FAMILY_DESCRIPTION, isActType } from '../protocol/act-types.js'
+import { PAYLOAD_SCHEMAS } from '../protocol/payloads.js'
+import type { ActVia } from '../protocol/envelope.js'
+import { NeuralOpsError, forbidden, invalid, type ErrorCode } from '../errors.js'
 
 export interface ToolDef {
   name: string
@@ -28,351 +31,195 @@ export interface ToolDef {
   inputSchema: Record<string, unknown>
 }
 
+export interface Caller {
+  agentId: string | null
+  via: ActVia
+  isAdmin: boolean
+}
+
+export interface ToolResult {
+  ok: boolean
+  result: unknown
+  error?: string
+  errorCode?: ErrorCode
+}
+
+export const ACT_TOOL_PREFIX = 'neuralops_'
+
+function jsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const s = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as Record<string, unknown>
+  delete s.$schema
+  return s
+}
+
+function withEnvelopeExtras(s: Record<string, unknown>): Record<string, unknown> {
+  const props = { ...((s.properties as Record<string, unknown>) ?? {}) }
+  props.references = {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Ids this act builds on, e.g. ["decision_0001","evidence_0002"]',
+  }
+  props.actId = {
+    type: 'string',
+    description: 'Optional idempotency key. Re-sending the same actId is rejected as a duplicate instead of applied twice.',
+  }
+  return { ...s, type: 'object', properties: props }
+}
+
+const QUERY_SCHEMAS = {
+  neuralops_whoami: z.object({}),
+  neuralops_register: RegisterSchema,
+  neuralops_workspace: z.object({}),
+  neuralops_tasks: z.object({
+    status: z
+      .enum(['unclaimed', 'in_progress', 'blocked', 'handoff_pending', 'completed', 'failed'])
+      .optional(),
+  }),
+  neuralops_inbox: z.object({}),
+  neuralops_get_task_context: z.object({
+    taskId: z.string(),
+    format: z.enum(['text', 'json']).optional().describe('text (default) is what you should read'),
+  }),
+  neuralops_get_full_context: z.object({ taskId: z.string() }),
+  neuralops_get_evidence: z.object({ evidenceId: z.string() }),
+  neuralops_get_decision: z.object({ decisionId: z.string() }),
+  neuralops_get_original_context: z.object({ actId: z.string() }),
+} as const
+
+type QueryTool = keyof typeof QUERY_SCHEMAS
+
+const QUERY_DESCRIPTIONS: Record<QueryTool, string> = {
+  neuralops_whoami: 'Who you are in this workspace: agent record, direct authority, and reporting line.',
+  neuralops_register:
+    'Register a new AI worker. Admin only in secure mode. Returns the agent and its bearer token (shown once).',
+  neuralops_workspace: 'Workspace overview: agents, tasks, pending approvals, policies.',
+  neuralops_tasks: 'List tasks, optionally filtered by status.',
+  neuralops_inbox:
+    'Everything waiting on you: your open tasks, handoffs to accept, escalations, approvals to decide, open questions/proposals addressed to you or your role. Call this first.',
+  neuralops_get_task_context:
+    'The COMPACTED task context — OBJECTIVE / COMPLETED / DECISIONS / CONSTRAINTS / EVIDENCE / OPEN / NEXT. Read this before working on a task instead of asking other agents.',
+  neuralops_get_full_context: 'The full raw record of a task (all records + act log). Large — prefer get_task_context.',
+  neuralops_get_evidence: 'Fetch one evidence record by id.',
+  neuralops_get_decision: 'Fetch one decision record by id.',
+  neuralops_get_original_context: 'Fetch the original act envelope by act id.',
+}
+
 export const TOOL_DEFS: ToolDef[] = [
-  {
-    name: 'neuralops_register',
-    description:
-      'Register an existing AI worker into the workspace. The worker keeps its own runtime; NeuralOps only tracks it for coordination.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string' },
-        model: { type: 'string', enum: ['Claude', 'Codex', 'Gemini', 'Qwen', 'GPT', 'Custom'] },
-        role: { type: 'string' },
-        reportsTo: { type: 'string' },
-      },
-      required: ['name', 'model', 'role'],
-    },
-  },
-  {
-    name: 'neuralops_workspace',
-    description: 'Get the current workspace, its agents, and open tasks.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'neuralops_tasks',
-    description: 'List tasks (optionally filtered by status).',
-    inputSchema: {
-      type: 'object',
-      properties: { status: { type: 'string' } },
-    },
-  },
-  {
-    name: 'neuralops_claim',
-    description: 'Claim an unclaimed task. Mutates task.assignee + task.status.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, note: { type: 'string' } },
-      required: ['taskId'],
-    },
-  },
-  {
-    name: 'neuralops_complete',
-    description:
-      'Mark a task complete. If the completion involves a production deploy, authority approval is required first.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        taskId: { type: 'string' },
-        summary: { type: 'string' },
-        resultRef: { type: 'string' },
-        evidence: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              type: { type: 'string' },
-              summary: { type: 'string' },
-              ref: { type: 'string' },
-            },
-          },
-        },
-      },
-      required: ['taskId', 'summary'],
-    },
-  },
-  {
-    name: 'neuralops_handoff',
-    description: 'Hand a task to another agent with an intent (implement/review/test).',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, to: { type: 'string' }, intent: { type: 'string' } },
-      required: ['taskId', 'to', 'intent'],
-    },
-  },
-  {
-    name: 'neuralops_accept_handoff',
-    description: 'Accept a pending handoff. Transfers ownership.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' } },
-      required: ['taskId'],
-    },
-  },
-  {
-    name: 'neuralops_decision',
-    description: 'Record a durable decision on a task.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, text: { type: 'string' }, rationale: { type: 'string' } },
-      required: ['taskId', 'text'],
-    },
-  },
-  {
-    name: 'neuralops_evidence',
-    description: 'Record evidence (test result, log, url) on a task.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, type: { type: 'string' }, summary: { type: 'string' }, ref: { type: 'string' } },
-      required: ['taskId', 'type', 'summary', 'ref'],
-    },
-  },
-  {
-    name: 'neuralops_request_approval',
-    description: 'Request approval for a constrained action (e.g. deploy to production).',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, action: { type: 'string' }, scope: { type: 'string' } },
-      required: ['action', 'scope'],
-    },
-  },
-  {
-    name: 'neuralops_authorize',
-    description: 'Approve a pending approval request.',
-    inputSchema: {
-      type: 'object',
-      properties: { approvalId: { type: 'string' } },
-      required: ['approvalId'],
-    },
-  },
-  {
-    name: 'neuralops_deny',
-    description: 'Deny a pending approval request.',
-    inputSchema: {
-      type: 'object',
-      properties: { approvalId: { type: 'string' }, reason: { type: 'string' } },
-      required: ['approvalId', 'reason'],
-    },
-  },
-  {
-    name: 'neuralops_escalate',
-    description: 'Escalate a blocked task to another agent.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' }, reason: { type: 'string' }, to: { type: 'string' } },
-      required: ['taskId', 'reason', 'to'],
-    },
-  },
-  {
-    name: 'neuralops_get_task_context',
-    description:
-      'Retrieve the COMPACTED task context — a small structured snapshot (OBJECTIVE/COMPLETED/DECISIONS/CONSTRAINTS/EVIDENCE/OPEN/NEXT). This is the value of NeuralOps: shared knowledge without shared token waste.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string' } },
-      required: ['taskId'],
-    },
-  },
-  {
-    name: 'neuralops_get_evidence',
-    description: 'On-demand deep retrieval of a specific evidence record.',
-    inputSchema: {
-      type: 'object',
-      properties: { evidenceId: { type: 'string' } },
-      required: ['evidenceId'],
-    },
-  },
-  {
-    name: 'neuralops_get_decision',
-    description: 'On-demand deep retrieval of a specific decision.',
-    inputSchema: {
-      type: 'object',
-      properties: { decisionId: { type: 'string' } },
-      required: ['decisionId'],
-    },
-  },
+  ...(Object.keys(QUERY_SCHEMAS) as QueryTool[]).map((name) => ({
+    name,
+    description: QUERY_DESCRIPTIONS[name],
+    inputSchema: jsonSchema(QUERY_SCHEMAS[name]),
+  })),
+  ...ACT_TYPES.map((type) => ({
+    name: `${ACT_TOOL_PREFIX}${type}`,
+    description: `[${ACT_FAMILY[type]}] ${ACT_DESCRIPTION[type]}`,
+    inputSchema: withEnvelopeExtras(jsonSchema(PAYLOAD_SCHEMAS[type])),
+  })),
 ]
 
-// Dispatcher: name + args → result. Used by both the HTTP API and (future) MCP transport.
-export function callTool(
-  name: string,
-  args: Record<string, unknown> = {},
-  callerAgent: string
-): { ok: boolean; result: unknown; error?: string } {
-  try {
-    switch (name) {
-      case 'neuralops_register':
-        return registerAgent(args, callerAgent)
-      case 'neuralops_workspace':
-        return { ok: true, result: getWorkspaceState() }
-      case 'neuralops_tasks':
-        return { ok: true, result: getTasks(args.status as string | undefined) }
-      case 'neuralops_get_task_context':
-        return { ok: true, result: getCompactedContext(args.taskId as string) }
-      case 'neuralops_get_evidence':
-        return { ok: true, result: getEvidenceById(args.evidenceId as string) }
-      case 'neuralops_get_decision':
-        return { ok: true, result: getDecisionById(args.decisionId as string) }
-      default:
-        // Treat as an act submission.
-        return submitActByName(name, args, callerAgent)
-    }
-  } catch (e) {
-    return { ok: false, result: null, error: (e as Error).message }
-  }
+function requireAgent(caller: Caller): string {
+  if (!caller.agentId) throw forbidden('This tool needs an agent identity (send your agent bearer token).')
+  return caller.agentId
 }
 
-function registerAgent(args: Record<string, unknown>, callerAgent: string) {
-  const agent = {
-    id: callerAgent,
-    workspaceId: 'ws_engineering',
-    name: String(args.name),
-    model: String(args.model || 'Custom'),
-    role: String(args.role),
-    reportsTo: (args.reportsTo as string) || null,
-    authority: [],
-    status: 'online' as const,
-    subscriptions: ['workspace'],
-    createdAt: new Date().toISOString(),
-  }
-  store.agents.set(agent.id, agent)
-  return { ok: true, result: agent }
+function parseArgs<N extends QueryTool>(name: N, args: unknown): z.infer<(typeof QUERY_SCHEMAS)[N]> {
+  const r = QUERY_SCHEMAS[name].safeParse(args ?? {})
+  if (!r.success) throw invalid(r.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '))
+  return r.data as z.infer<(typeof QUERY_SCHEMAS)[N]>
 }
 
-function getWorkspaceState() {
+export function workspaceState() {
   return {
-    workspaces: Array.from(store.workspaces.values()),
-    agents: Array.from(store.agents.values()),
-    tasks: Array.from(store.tasks.values()),
-    pendingApprovals: Array.from(store.approvals.values()).filter((a) => a.status === 'pending'),
+    workspaces: [...store.workspaces.values()],
+    agents: [...store.agents.values()],
+    tasks: [...store.tasks.values()],
+    pendingApprovals: [...store.approvals.values()].filter((a) => a.status === 'pending'),
+    policies: [...store.policies.values()],
   }
 }
 
-function getTasks(status?: string) {
-  const all = Array.from(store.tasks.values())
-  return status ? all.filter((t) => t.status === status) : all
+export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolResult {
+  try {
+    const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>
+    switch (name) {
+      case 'neuralops_whoami': {
+        parseArgs(name, args)
+        const id = requireAgent(caller)
+        const agent = store.agents.get(id)!
+        return { ok: true, result: { agent, via: caller.via } }
+      }
+      case 'neuralops_register': {
+        const { agent, token } = registerAgent(args, { asAdmin: caller.isAdmin })
+        return { ok: true, result: { agent, token, note: 'Store this token now — it is not shown again.' } }
+      }
+      case 'neuralops_workspace':
+        parseArgs(name, args)
+        return { ok: true, result: workspaceState() }
+      case 'neuralops_tasks': {
+        const { status } = parseArgs(name, args)
+        const all = [...store.tasks.values()]
+        return { ok: true, result: status ? all.filter((t) => t.status === status) : all }
+      }
+      case 'neuralops_inbox':
+        parseArgs(name, args)
+        return { ok: true, result: getInbox(requireAgent(caller)) }
+      case 'neuralops_get_task_context': {
+        const { taskId, format } = parseArgs(name, args)
+        const ctx = getCompactedContext(taskId)
+        return { ok: true, result: format === 'json' ? ctx : { text: formatCompactedContext(ctx), tokens: ctx.tokens, method: ctx.method } }
+      }
+      case 'neuralops_get_full_context':
+        return { ok: true, result: getFullContext(parseArgs(name, args).taskId) }
+      case 'neuralops_get_evidence':
+        return { ok: true, result: getEvidenceById(parseArgs(name, args).evidenceId) }
+      case 'neuralops_get_decision':
+        return { ok: true, result: getDecisionById(parseArgs(name, args).decisionId) }
+      case 'neuralops_get_original_context':
+        return { ok: true, result: getOriginalContext(parseArgs(name, args).actId) }
+    }
+
+    if (name.startsWith(ACT_TOOL_PREFIX)) {
+      const type = name.slice(ACT_TOOL_PREFIX.length)
+      if (isActType(type)) {
+        const from = requireAgent(caller)
+        const { references, actId, ...payload } = args
+        const res = processAct(
+          {
+            ...(typeof actId === 'string' ? { id: actId } : {}),
+            type,
+            from,
+            references: Array.isArray(references) ? references : [],
+            payload,
+          },
+          { via: caller.via }
+        )
+        return actToolResult(res)
+      }
+    }
+    return { ok: false, result: null, error: `Unknown tool: ${name}`, errorCode: 'not_found' }
+  } catch (e) {
+    const err = e instanceof NeuralOpsError ? e : new NeuralOpsError('invalid', (e as Error).message)
+    return { ok: false, result: null, error: err.message, errorCode: err.code }
+  }
 }
 
-// Map a tool name to an Act envelope + dispatch through the task-manager.
-function submitActByName(
-  name: string,
-  args: Record<string, unknown>,
-  callerAgent: string
-): { ok: boolean; result: unknown; error?: string } {
-  const map: Record<string, { type: ActInput['type']; build: () => ActInput }> = {
-    neuralops_claim: {
-      type: 'claim',
-      build: () => ({
-        type: 'claim',
-        from: callerAgent,
-        payload: { taskId: args.taskId, note: args.note },
-      }),
-    },
-    neuralops_complete: {
-      type: 'complete',
-      build: () => ({
-        type: 'complete',
-        from: callerAgent,
-        payload: {
-          taskId: args.taskId,
-          summary: args.summary,
-          resultRef: args.resultRef,
-          evidence: args.evidence,
-        },
-      }),
-    },
-    neuralops_handoff: {
-      type: 'handoff',
-      build: () => ({
-        type: 'handoff',
-        from: callerAgent,
-        payload: { taskId: args.taskId, to: args.to, intent: args.intent },
-      }),
-    },
-    neuralops_accept_handoff: {
-      type: 'accept_handoff',
-      build: () => ({
-        type: 'accept_handoff',
-        from: callerAgent,
-        payload: { taskId: args.taskId },
-      }),
-    },
-    neuralops_decision: {
-      type: 'decision',
-      build: () => ({
-        type: 'decision',
-        from: callerAgent,
-        payload: { taskId: args.taskId, text: args.text, rationale: args.rationale },
-      }),
-    },
-    neuralops_evidence: {
-      type: 'evidence',
-      build: () => ({
-        type: 'evidence',
-        from: callerAgent,
-        payload: {
-          taskId: args.taskId,
-          type: args.type,
-          summary: args.summary,
-          ref: args.ref,
-        },
-      }),
-    },
-    neuralops_request_approval: {
-      type: 'request_approval',
-      build: () => ({
-        type: 'request_approval',
-        from: callerAgent,
-        payload: { taskId: args.taskId, action: args.action, scope: args.scope },
-      }),
-    },
-    neuralops_authorize: {
-      type: 'authorize',
-      build: () => ({
-        type: 'authorize',
-        from: callerAgent,
-        payload: { approvalId: args.approvalId },
-      }),
-    },
-    neuralops_deny: {
-      type: 'deny',
-      build: () => ({
-        type: 'deny',
-        from: callerAgent,
-        payload: { approvalId: args.approvalId, reason: args.reason },
-      }),
-    },
-    neuralops_escalate: {
-      type: 'escalate',
-      build: () => ({
-        type: 'escalate',
-        from: callerAgent,
-        payload: { taskId: args.taskId, reason: args.reason, to: args.to },
-      }),
-    },
-  }
-  const entry = map[name]
-  if (!entry) return { ok: false, result: null, error: `Unknown tool: ${name}` }
-  const res = processAct(entry.build())
+function actToolResult(res: ActResult): ToolResult {
   return {
     ok: res.ok,
     result: {
-      actId: res.act.id,
+      actId: res.act?.id ?? null,
       stateChanged: res.stateChanged,
+      message: res.message,
       approval: res.approval,
       task: res.task,
-      error: res.error,
+      ledgerEvent: res.ledgerEvent
+        ? { seq: res.ledgerEvent.seq, deltaSummary: res.ledgerEvent.deltaSummary, hash: res.ledgerEvent.hash }
+        : null,
     },
-    error: res.error,
+    ...(res.ok ? {} : { error: res.error, errorCode: res.errorCode }),
   }
 }
 
 export function actFamilies() {
-  return {
-    types: ACT_TYPES,
-    family: ACT_FAMILY,
-    descriptions: FAMILY_DESCRIPTION,
-  }
+  return { types: ACT_TYPES, family: ACT_FAMILY, descriptions: FAMILY_DESCRIPTION }
 }
-
-export { getCompactedContext, getFullContext, getContextComparison, getOriginalContext, getEvidenceById, getDecisionById }

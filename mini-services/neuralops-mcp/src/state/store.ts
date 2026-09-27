@@ -1,104 +1,246 @@
-// NeuralOps Coordination Core — In-Memory Store
+// NeuralOps Coordination Core — Store
 //
-// V0.1 uses an in-memory store. The API surface is stable so a Prisma-backed
-// persistent store can replace it later without touching engines or the MCP layer.
+// Holds materialized views (agents, tasks, decisions, …), the hash-chained
+// ledger, and the act journal. The journal is the source of truth: replaying it
+// on an empty store reproduces every view byte-for-byte (see engines/replay.ts).
+//
+// Ids are deterministic (per-prefix counters) so replay reproduces them exactly.
 
+import { createHash } from 'node:crypto'
 import type {
   Agent,
   Approval,
   Decision,
   Evidence,
+  JournalRecord,
   LedgerEvent,
+  Policy,
   Proposal,
   Question,
   Task,
   Workspace,
 } from './types.js'
-import { makeId } from '../protocol/envelope.js'
+import type { Act } from '../protocol/envelope.js'
 
-class Store {
-  workspaces = new Map<string, Workspace>()
-  agents = new Map<string, Agent>()
-  tasks = new Map<string, Task>()
-  decisions = new Map<string, Decision>()
-  evidence = new Map<string, Evidence>()
-  approvals = new Map<string, Approval>()
-  questions = new Map<string, Question>()
-  proposals = new Map<string, Proposal>()
-  ledger: LedgerEvent[] = []
-  acts: Map<string, import('../protocol/envelope.js').Act> = new Map()
+export const GENESIS_HASH = '0'.repeat(64)
 
-  private seq = 0
-  private subscribers: Array<(event: LedgerEvent) => void> = []
+export function sha256(s: string): string {
+  return createHash('sha256').update(s).digest('hex')
+}
 
-  nextSeq(): number {
-    return ++this.seq
+// Deterministic JSON (sorted keys) for hashing.
+export function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null'
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`
+  const o = v as Record<string, unknown>
+  return `{${Object.keys(o)
+    .filter((k) => o[k] !== undefined)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`)
+    .join(',')}}`
+}
+
+export function hashLedgerBody(e: Omit<LedgerEvent, 'hash'>): string {
+  const { ...body } = e
+  return sha256(e.prevHash + stableStringify(body))
+}
+
+type LedgerListener = (event: LedgerEvent) => void
+type SnapshotListener = () => void
+type JournalListener = (rec: JournalRecord) => void
+
+interface StoreData {
+  workspaces: Map<string, Workspace>
+  agents: Map<string, Agent>
+  tasks: Map<string, Task>
+  decisions: Map<string, Decision>
+  evidence: Map<string, Evidence>
+  approvals: Map<string, Approval>
+  questions: Map<string, Question>
+  proposals: Map<string, Proposal>
+  policies: Map<string, Policy>
+  tokenHashes: Map<string, string> // sha256(token) → agent id
+  ledger: LedgerEvent[]
+  acts: Map<string, Act>
+  counters: Record<string, number>
+  actSeq: number
+  journal: JournalRecord[]
+}
+
+function emptyData(): StoreData {
+  return {
+    workspaces: new Map(),
+    agents: new Map(),
+    tasks: new Map(),
+    decisions: new Map(),
+    evidence: new Map(),
+    approvals: new Map(),
+    questions: new Map(),
+    proposals: new Map(),
+    policies: new Map(),
+    tokenHashes: new Map(),
+    ledger: [],
+    acts: new Map(),
+    counters: {},
+    actSeq: 0,
+    journal: [],
   }
+}
 
-  newId(prefix: string): string {
-    return makeId(prefix)
-  }
+export class Store {
+  private d: StoreData = emptyData()
+  private ledgerListeners: LedgerListener[] = []
+  private snapshotListeners: SnapshotListener[] = []
+  private journalListeners: JournalListener[] = []
+  /** While muted (replay, integrity check) nothing is broadcast or persisted. */
+  muted = false
 
-  // --- subscribers (for event broadcasting) ---
-  subscribe(fn: (event: LedgerEvent) => void): () => void {
-    this.subscribers.push(fn)
-    return () => {
-      this.subscribers = this.subscribers.filter((f) => f !== fn)
+  get workspaces() { return this.d.workspaces }
+  get agents() { return this.d.agents }
+  get tasks() { return this.d.tasks }
+  get decisions() { return this.d.decisions }
+  get evidence() { return this.d.evidence }
+  get approvals() { return this.d.approvals }
+  get questions() { return this.d.questions }
+  get proposals() { return this.d.proposals }
+  get policies() { return this.d.policies }
+  get tokenHashes() { return this.d.tokenHashes }
+  get ledger(): readonly LedgerEvent[] { return this.d.ledger }
+  get acts() { return this.d.acts }
+  get journal(): readonly JournalRecord[] { return this.d.journal }
+
+  // ---- ids & sequences ----
+  nextId(prefix: string, exists?: (id: string) => boolean): string {
+    for (;;) {
+      const n = (this.d.counters[prefix] = (this.d.counters[prefix] ?? 0) + 1)
+      const candidate = `${prefix}_${String(n).padStart(4, '0')}`
+      if (!exists || !exists(candidate)) return candidate
     }
   }
 
-  emit(event: LedgerEvent): void {
-    for (const fn of this.subscribers) fn(event)
+  nextActSeq(): number {
+    return ++this.d.actSeq
   }
 
-  appendLedger(event: LedgerEvent): void {
-    this.ledger.push(event)
-    this.emit(event)
+  /** Replay: acts carry their original seq. */
+  setActSeq(seq: number): void {
+    this.d.actSeq = Math.max(this.d.actSeq, seq)
   }
 
-  // --- helpers ---
-  tasksByWorkspace(wsId: string): Task[] {
-    return Array.from(this.tasks.values()).filter((t) => t.workspaceId === wsId)
+  exportCounters(): { counters: Record<string, number>; actSeq: number } {
+    return { counters: { ...this.d.counters }, actSeq: this.d.actSeq }
   }
 
-  agentsByWorkspace(wsId: string): Agent[] {
-    return Array.from(this.agents.values()).filter((a) => a.workspaceId === wsId)
+  restoreCounters(c: { counters: Record<string, number>; actSeq: number }): void {
+    this.d.counters = { ...c.counters }
+    this.d.actSeq = c.actSeq
   }
 
+  // ---- ledger (hash chained) ----
+  get ledgerHead(): string {
+    const last = this.d.ledger[this.d.ledger.length - 1]
+    return last ? last.hash : GENESIS_HASH
+  }
+
+  appendLedger(e: Omit<LedgerEvent, 'id' | 'seq' | 'prevHash' | 'hash'>): LedgerEvent {
+    const seq = this.d.ledger.length + 1
+    const body: Omit<LedgerEvent, 'hash'> = {
+      ...e,
+      id: `evt_${String(seq).padStart(4, '0')}`,
+      seq,
+      prevHash: this.ledgerHead,
+    }
+    const event: LedgerEvent = { ...body, hash: hashLedgerBody(body) }
+    this.d.ledger.push(event)
+    if (!this.muted) for (const fn of this.ledgerListeners) fn(event)
+    return event
+  }
+
+  verifyChain(): { valid: boolean; brokenAt: number | null } {
+    let prev = GENESIS_HASH
+    for (const e of this.d.ledger) {
+      const { hash, ...body } = e
+      if (e.prevHash !== prev || hashLedgerBody(body) !== hash) {
+        return { valid: false, brokenAt: e.seq }
+      }
+      prev = hash
+    }
+    return { valid: true, brokenAt: null }
+  }
+
+  // ---- journal ----
+  journalAppend(rec: JournalRecord): void {
+    this.d.journal.push(rec)
+    if (!this.muted) for (const fn of this.journalListeners) fn(rec)
+  }
+
+  // ---- listeners ----
+  onLedger(fn: LedgerListener): () => void {
+    this.ledgerListeners.push(fn)
+    return () => (this.ledgerListeners = this.ledgerListeners.filter((f) => f !== fn))
+  }
+  onSnapshot(fn: SnapshotListener): () => void {
+    this.snapshotListeners.push(fn)
+    return () => (this.snapshotListeners = this.snapshotListeners.filter((f) => f !== fn))
+  }
+  onJournal(fn: JournalListener): () => void {
+    this.journalListeners.push(fn)
+    return () => (this.journalListeners = this.journalListeners.filter((f) => f !== fn))
+  }
+  /** Tell observers the whole state changed (reset, reseed, replay). */
+  broadcastSnapshot(): void {
+    if (!this.muted) for (const fn of this.snapshotListeners) fn()
+  }
+
+  // ---- queries ----
   decisionsForTask(taskId: string): Decision[] {
-    return Array.from(this.decisions.values())
-      .filter((d) => d.taskId === taskId)
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    return [...this.d.decisions.values()]
+      .filter((x) => x.taskId === taskId)
+      .sort((a, b) => a.id.localeCompare(b.id))
   }
-
   evidenceForTask(taskId: string): Evidence[] {
-    return Array.from(this.evidence.values())
-      .filter((e) => e.taskId === taskId)
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    return [...this.d.evidence.values()]
+      .filter((x) => x.taskId === taskId)
+      .sort((a, b) => a.id.localeCompare(b.id))
   }
-
   ledgerForTask(taskId: string): LedgerEvent[] {
-    return this.ledger.filter((e) => e.taskId === taskId)
+    return this.d.ledger.filter((e) => e.taskId === taskId)
+  }
+  approvalsForTask(taskId: string): Approval[] {
+    return [...this.d.approvals.values()].filter((a) => a.taskId === taskId)
   }
 
-  pendingApprovalsForApprover(agentId: string): Approval[] {
-    return Array.from(this.approvals.values()).filter(
-      (a) => a.approver === agentId && a.status === 'pending'
-    )
-  }
-
+  // ---- lifecycle ----
   reset(): void {
-    this.workspaces.clear()
-    this.agents.clear()
-    this.tasks.clear()
-    this.decisions.clear()
-    this.evidence.clear()
-    this.approvals.clear()
-    this.questions.clear()
-    this.proposals.clear()
-    this.ledger = []
-    this.acts.clear()
-    this.seq = 0
+    this.d = emptyData()
+  }
+
+  /** Deep copy of all data (used by the integrity check to restore state). */
+  exportData(): StoreData {
+    return structuredClone(this.d)
+  }
+  importData(data: StoreData): void {
+    this.d = structuredClone(data)
+  }
+
+  /** Hash of every materialized view. Equal hashes ⇒ identical state. */
+  stateHash(): string {
+    const views = {
+      workspaces: [...this.d.workspaces.values()],
+      agents: [...this.d.agents.values()],
+      tasks: [...this.d.tasks.values()],
+      decisions: [...this.d.decisions.values()],
+      evidence: [...this.d.evidence.values()],
+      approvals: [...this.d.approvals.values()],
+      questions: [...this.d.questions.values()],
+      proposals: [...this.d.proposals.values()],
+      policies: [...this.d.policies.values()],
+      tokenHashes: [...this.d.tokenHashes.entries()],
+      ledgerHead: this.ledgerHead,
+      counters: this.d.counters,
+      actSeq: this.d.actSeq,
+    }
+    return sha256(stableStringify(views))
   }
 }
 

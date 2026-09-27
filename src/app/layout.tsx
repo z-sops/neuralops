@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   keywords: ["NeuralOps", "MCP", "AI", "coordination", "multi-agent", "protocol"],
   authors: [{ name: "NeuralOps" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.svg",
   },
 };
 

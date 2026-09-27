@@ -9,10 +9,10 @@
 | ID | Name | Model | Role | Reports To | Authority |
 |----|------|-------|------|------------|-----------|
 | `agent.ceo` | CEO | Claude | ceo | (none) | wildcard: action=*, scope=* |
-| `agent.architect` | Architect | Claude | architect | CEO | direct: deploy/production, complete/production; gatekeeper for others' production completes |
+| `agent.architect` | Architect | Claude | architect | CEO | direct: deploy/production, complete/production, govern/*; named approver in policies |
 | `agent.backend` | Backend Dev | Codex | backend | Architect | none (must request approval) |
 | `agent.qa` | QA Engineer | Gemini | qa | Architect | none |
-| `agent.security` | Security | Qwen | security | CEO | direct: deny/deploy |
+| `agent.security` | Security | Qwen | security | CEO | veto: deny/production |
 
 ## 9.3 Org hierarchy
 
@@ -21,10 +21,10 @@ CEO (Claude)
   ├── wildcard authority: action="*", scope="*", no approval needed
   │
   └── Architect (Claude)
-        ├── direct: deploy/production (no approval)
-        ├── direct: complete/production (no approval)
-        ├── gatekeeping: complete/production requires Architect's approval
-        │   (yaani Backend ko Architect se approval lena padega)
+        ├── direct: deploy/production, complete/production, govern/*
+        ├── named approver in workspace policies:
+        │     complete/production → agent.architect
+        │     deploy/production   → agent.architect
         │
         ├── Backend (Codex) — no direct authority
         │   must request_approval for production deploy
@@ -32,7 +32,9 @@ CEO (Claude)
         └── QA (Gemini) — no direct authority
 
 Security (Qwen) — reports directly to CEO (not Architect)
-  ├── direct: deny/deploy (can block deployments)
+  ├── veto: deny/production (can deny any production approval, cannot authorize)
+
+task_42 gates: complete/production  (gate task pe hai — agent ke lafzon pe nahi)
 ```
 
 ## 9.4 Pre-seeded tasks
@@ -71,58 +73,48 @@ Security (Qwen) — reports directly to CEO (not Architect)
 
 ## 9.5 The golden path demo scenario
 
-User clicks 5 buttons in order. This exercises the entire protocol:
+V0.1.1 mein 10 scenario buttons. Golden path:
 
 ```
-Step 1: Security → claim task_43
-  - Act: claim { from: agent.security, payload: { taskId: task_43 } }
-  - State: task_43.status = in_progress, assignee = agent.security
-  - Ledger: "agent.security claimed task task_43"
-
-Step 2: Backend → handoff task_42 to Security (review)
-  - Act: handoff { from: agent.backend, payload: { taskId: task_42, to: agent.security, intent: review } }
-  - State: task_42.status = handoff_pending, pendingHandoffTo = agent.security
-  - Ledger: "agent.backend → handoff task_42 to agent.security (review)"
-
-Step 3: Backend → complete task_42 (with deploy evidence)
-  - Act: complete { from: agent.backend, payload: { taskId: task_42, summary: ..., resultRef: "deploy://production/v1.2.3", evidence: [{ type: deploy, ... }] } }
-  - AUTHORITY GATE FIRES: resultRef contains "production" + evidence type "deploy"
-  - Backend has no direct production authority
-  - Approval created: approver = agent.architect, status = pending
-  - State NOT changed (task still in_progress)
-  - Ledger: "agent.backend requested approval to complete (deploy) task_42"
-
-Step 4: Architect → authorize latest approval
-  - Act: authorize { from: agent.architect, payload: { approvalId: ... } }
-  - Approval.status = approved, decidedBy = agent.architect
-  - Ledger: "agent.architect AUTHORIZED ..."
-
-Step 5: Backend → complete task_42 (now approved)
-  - Act: complete { ... same as step 3 ... }
-  - hasApprovedApproval check passes
-  - State: task_42.status = completed, resultRef = deploy://production/v1.2.3, progress = 100
-  - Ledger: "agent.backend completed task task_42: deployed to prod"
+1. Security → claim task_43                         → task_43 in_progress
+2. Backend  → handoff task_42 to Security (review)  → task_42 handoff_pending
+3. Security → accept_handoff task_42                → Security owns task_42
+4. Security → evidence (review passed)              → evidence_0003
+5. Security → complete task_42 (deploy)             → GATE: task_42 gated complete/production,
+                                                      Security has no direct authority
+                                                      → approval_0001 pending (approver: Architect)
+6. Security → authorize approval_0001 (its own)     → 403 forbidden (separation of duties)
+7. Architect → authorize approval_0001              → approved
+8. Security → complete task_42 (deploy)             → completed; approval_0001 consumed (single-use)
+9. QA → escalate task_44 to Architect               → blocked, escalatedTo = Architect
+10. Architect → decision on task_42                 → decision_0003
 ```
+
+V0.1 mein step 2 ke baad Backend ne pending handoff ke dauran hi task complete kar diya tha. Yeh ab `409 conflict` hai, is liye Security pehle accept karta hai.
 
 ## 9.6 Final state after golden path
 
 ```
-- task_42: completed, 100%, resultRef=deploy://production/v1.2.3
-- task_43: in_progress (owned by Security)
-- task_44: still blocked
-- 11 ledger events total (6 seeded + 5 from golden path)
-- 1 approval (approved)
-- Compaction: 1363 → 398 tokens → 71% reduction
+- task_42: completed, 100%
+- task_43: in_progress (Security)
+- task_44: blocked, escalatedTo = agent.architect (Architect claim karke le sakta hai)
+- approval_0001: approved, consumedBy = the completing act
+- Ledger: 6 seeded + golden-path events, hash chain valid (/api/integrity)
+- Compaction on task_42: ≈81% (chars/4 estimate)
 ```
 
 ## 9.7 What each step demonstrates
 
 | Step | Demonstrates |
 |------|-------------|
-| 1 | Task lifecycle (claim) — basic act mutating state |
-| 2 | Handoff protocol — ownership transfer with intent |
-| 3 | **Authority engine** — gatekeeping fires, approval required |
-| 4 | **Approval workflow** — approver authorizes |
-| 5 | Flow continuation — `hasApprovedApproval` check passes, state changes |
-| Compaction view | **Context engine** — 71% token reduction visible |
-| Ledger | **Immutable audit trail** — every act recorded with before→after delta |
+| 1 | Task lifecycle (claim) |
+| 2–3 | Handoff protocol: offer → accept, ownership moves only on accept |
+| 4 | Evidence as a deliberate act |
+| 5 | **Authority gate** from task gates + policy |
+| 6 | **Separation of duties**: requester cannot approve itself |
+| 7 | Approver authorizes |
+| 8 | **Single-use approval** consumed on completion |
+| 9 | Escalation with takeover path |
+| 10 | Durable decision |
+| Compaction view | **Context engine**: compacted vs full (estimate) |
+| Ledger | **Hash-chained audit trail** with before → after delta and `via` |

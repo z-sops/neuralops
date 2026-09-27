@@ -1,30 +1,58 @@
-// WebSocket gateway — broadcasts ledger events + state snapshots to the
-// Protocol Inspector in real time so acts are observable the instant they
-// mutate state.
+// WebSocket gateway — broadcasts ledger events + state snapshots so acts are
+// observable the instant they mutate state. Snapshots are coalesced per tick.
 
 import type { Server as HTTPServer } from 'node:http'
 import { Server as IOServer, type Socket } from 'socket.io'
+import type { Config } from '../config.js'
 import { store } from '../state/store.js'
 import { snapshotState } from './http.js'
+import { resolveCaller } from './identity.js'
 import type { LedgerEvent } from '../state/types.js'
 
-export function setupWebSocket(httpServer: HTTPServer): IOServer {
+export function setupWebSocket(httpServer: HTTPServer, config: Config): { io: IOServer; dispose: () => void } {
   const io = new IOServer(httpServer, {
-    cors: { origin: '*', methods: ['GET', 'POST'] },
+    cors: config.corsOrigin ? { origin: config.corsOrigin, methods: ['GET', 'POST'] } : undefined,
     pingTimeout: 60000,
     pingInterval: 25000,
   })
 
-  // Whenever the store appends a ledger event, broadcast it + a fresh snapshot.
-  store.subscribe((event: LedgerEvent) => {
+  if (config.mode === 'secure') {
+    io.use((socket, next) => {
+      try {
+        const token = (socket.handshake.auth as { token?: string })?.token ?? null
+        resolveCaller(config, token, null)
+        next()
+      } catch (e) {
+        next(e as Error)
+      }
+    })
+  }
+
+  let pending = false
+  const scheduleSnapshot = () => {
+    if (pending) return
+    pending = true
+    queueMicrotask(() => {
+      pending = false
+      io.emit('state:snapshot', snapshotState(config))
+    })
+  }
+
+  const offLedger = store.onLedger((event: LedgerEvent) => {
     io.emit('ledger:event', event)
-    io.emit('state:snapshot', snapshotState())
+    scheduleSnapshot()
   })
+  const offSnapshot = store.onSnapshot(scheduleSnapshot)
 
   io.on('connection', (socket: Socket) => {
-    // New inspector client → send the current snapshot immediately.
-    socket.emit('state:snapshot', snapshotState())
+    socket.emit('state:snapshot', snapshotState(config))
   })
 
-  return io
+  return {
+    io,
+    dispose: () => {
+      offLedger()
+      offSnapshot()
+    },
+  }
 }

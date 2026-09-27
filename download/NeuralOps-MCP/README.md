@@ -1,7 +1,7 @@
 # NeuralOps MCP — Product Documentation Package
 
 > **AI Workforce Coordination Protocol**
-> V0.1 — Complete Product Summary
+> V0.1.1 — Hardened build (see `17-V0.1.1-Hardening.md`)
 
 ---
 
@@ -19,10 +19,10 @@ NeuralOps-MCP/
 ├── 01-Product-Identity.md                 ← naam, positioning, killer feature
 ├── 02-Problem-Solution.md                 ← kya problem, NeuralOps kya karta hai
 ├── 03-Architecture.md                     ← topology, components, separation
-├── 04-Coordination-Protocol.md            ← act envelope, 22 acts, 6 families
+├── 04-Coordination-Protocol.md            ← act envelope, 23 acts, 6 families
 ├── 05-State-Layer.md                      ← entities, ledger, design principle
 ├── 06-Engines.md                          ← task-manager, authority, context
-├── 07-MCP-Tools.md                        ← 15 tools, transport abstraction
+├── 07-MCP-Tools.md                        ← 33 tools, real MCP stdio transport
 ├── 08-API-Reference.md                    ← REST + WebSocket full reference
 ├── 09-Demo-Seed.md                        ← Engineering workspace scenario
 ├── 10-Protocol-Inspector.md               ← dashboard sections + tech stack
@@ -31,7 +31,8 @@ NeuralOps-MCP/
 ├── 13-Roadmap.md                          ← V0.2 → V1.0
 ├── 14-Verification.md                     ← browser-verified status
 ├── 15-Design-Principles.md               ← 10 core principles
-└── 16-Files-Index.md                      ← sab files ka index
+├── 16-Files-Index.md                      ← sab files ka index
+└── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, security, MCP setup, tests
 ```
 
 ## Kaise read karein
@@ -40,29 +41,29 @@ NeuralOps-MCP/
 - **Concept samajhna:** `02-Problem-Solution.md` + `04-Coordination-Protocol.md`
 - **Technical deep dive:** `05-State-Layer.md` + `06-Engines.md` + `08-API-Reference.md`
 - **Demo chalana:** `09-Demo-Seed.md`
-- **Build karne wale ke liye:** `03-Architecture.md` + `16-Files-Index.md`
+- **Build karne wale ke liye:** `03-Architecture.md` + `16-Files-Index.md` + `17-V0.1.1-Hardening.md`
 - **Sab kuch ek file mein:** `NeuralOps-MCP-Full-Summary.md`
 
 ## TL;DR (30 seconds)
 
 NeuralOps MCP ek **coordination layer** hai jo customer ke existing AI agents (Claude, Codex, Gemini, Qwen) ke beech baith ke unhe organize karta hai. Yeh agents ko replace nahi karta — unhe ek shared workplace deta hai jahan:
 
-1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval — 22 types total)
+1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval — 23 types total)
 2. **Immutable ledger** mein har kaam record hota hai with before→after deltas
 3. **Authority engine** enforce karta hai kaun kya kar sakta hai (production deploy ke liye approval chahiye)
-4. **Context compaction** se ek agent ka 20k token context doosre agent ko 2k mein transfer hota hai — **71% token reduction** demo mein verified
+4. **Context compaction**: agent ko poori history ki bajaye chhota structured snapshot milta hai — demo pe **~70–81% kam tokens** (chars/4 estimate)
 
-Protocol real hai, demo agents fake hain. Real agent (Claude Code via MCP) same `neuralops.claim_task()` call karega jo UI button abhi karta hai.
+Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, Codex) ab MCP stdio se connect ho kar wahi acts bhejte hain (setup: §17.7).
 
 ## Status
 
-- ✅ Coordination Core (port 3031) — running, browser-verified
-- ✅ Protocol Inspector dashboard (`/`) — running, golden path verified end-to-end
-- ✅ 71% token compaction — verified on demo task
-- ✅ Lint clean, zero console errors
-- 📋 V0.2 roadmap ready (real MCP transport, Prisma, multi-workspace)
+- ✅ Coordination Core (port 3031): persistent journal, hash-chained ledger, secure mode
+- ✅ Real MCP stdio server (33 tools)
+- ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
+- ✅ 55 automated tests; tsc + lint clean (frontend + backend)
+- 📋 Next: external enforcement (GitHub check / hooks), multi-workspace, DB-backed journal
 
 ---
 
-**Generated:** V0.1 demo build
+**Generated:** V0.1 demo build · **Hardened:** V0.1.1
 **Live demo:** Preview Panel → `/` route

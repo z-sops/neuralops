@@ -1,40 +1,32 @@
-// NeuralOps MCP — V0.1 entry point.
+// NeuralOps MCP — Coordination Core entry point.
 //
-// Starts the Coordination Core (in-memory state + engines), the HTTP REST
-// door, and the WebSocket event stream. Seeds a demo workspace so the
-// Protocol Inspector has something to show immediately.
-//
-// The MCP tool surface is defined in src/mcp/tools.ts. The same handlers
-// serve the HTTP /api/tools/* endpoints and (in a future V0.2) a real MCP
-// stdio/SSE transport — the protocol layer doesn't change.
+// Restores state from the journal (or seeds a fresh workspace), then serves
+// HTTP + WebSocket on NEURALOPS_PORT (default 3031). Agents connect over MCP
+// through src/mcp/stdio.ts, which proxies to this process.
 
-import { createServer } from 'node:http'
-import { handleHttp } from './server/http.js'
-import { setupWebSocket } from './server/ws.js'
-import { seedDemo } from './seed/demo.js'
+import { loadConfig } from './config.js'
+import { createApp } from './app.js'
+import { store } from './state/store.js'
+import { DEMO_AGENT_IDS } from './seed/demo.js'
+import { demoToken } from './engines/agents.js'
 
-const PORT = 3031
+const config = loadConfig()
+const app = createApp(config)
+const port = await app.listen()
 
-const httpServer = createServer((req, res) => {
-  handleHttp(req, res).catch((e) => {
-    console.error('HTTP handler error:', e)
-    res.writeHead(500, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: String(e) }))
-  })
-})
+console.log(`NeuralOps MCP — Coordination Core v0.1.1`)
+console.log(`  mode      : ${config.mode}`)
+console.log(`  http+ws   : :${port}`)
+console.log(`  journal   : ${app.journal ? app.journal.path : 'off (in-memory)'}${app.restored ? ' (restored)' : ''}`)
+console.log(`  ledger    : ${store.ledger.length} events, head ${store.ledgerHead.slice(0, 12)}…`)
+if (config.mode === 'demo') {
+  console.log(`  demo mode : Inspector may act as any agent. Demo agent tokens:`)
+  for (const id of DEMO_AGENT_IDS) if (store.agents.has(id)) console.log(`              ${id.padEnd(16)} ${demoToken(id)}`)
+}
 
-setupWebSocket(httpServer)
-
-// Seed the demo workspace on boot.
-seedDemo()
-
-httpServer.listen(PORT, () => {
-  console.log(`╔══════════════════════════════════════════════╗`)
-  console.log(`║  NeuralOps MCP — Coordination Core v0.1     ║`)
-  console.log(`║  HTTP + WebSocket on port ${PORT}             ║`)
-  console.log(`║  Demo workspace "Engineering" seeded.        ║`)
-  console.log(`╚══════════════════════════════════════════════╝`)
-  console.log(`\nInspector connects via:`)
-  console.log(`  REST  → /api/state?XTransformPort=${PORT}`)
-  console.log(`  WS    → io("/?XTransformPort=${PORT}")\n`)
-})
+const shutdown = async () => {
+  await app.close()
+  process.exit(0)
+}
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)

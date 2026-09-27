@@ -18,7 +18,7 @@ Har coordination operation ek typed envelope mein wrapped hota hai:
 ```json
 {
   "id": "act_123",                    // server-assigned if absent
-  "type": "handoff",                  // one of 22 types
+  "type": "handoff",                  // one of 23 types
   "from": "agent.architect",          // caller agent id
   "to": "agent.backend",             // target (agent / role / task / workspace)
   "taskId": "task_42",               // optional task reference
@@ -40,7 +40,9 @@ Har coordination operation ek typed envelope mein wrapped hota hai:
 
 **Important:** `payload` deliberately small hai. Rich state Coordination Core mein rehta hai.
 
-## 4.3 6 Act Families — 22 Act Types
+## 4.3 6 Act Families — 23 Act Types
+
+> V0.1.1: task family mein `create_task` add hua (`{ id?, title, objective, constraints?, openItems?, nextSteps?, gates? }`). Conversation acts `ttlSeconds` lete hain.
 
 ### Family 1: TASK (emerald) — Lifecycle mutations
 

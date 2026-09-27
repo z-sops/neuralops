@@ -4,12 +4,22 @@
 
 ✅ Coordination Core (typed acts, state mutation, immutable ledger)
 ✅ Authority + approval engine
-✅ Context compaction engine (71% verified)
-✅ MCP tool registry (15 tools)
+✅ Context compaction engine (~70–81% on demo, chars/4 estimate)
+✅ MCP tool registry (33 tools in V0.1.1)
 ✅ HTTP REST API + WebSocket
 ✅ Demo seed (Engineering workspace)
 ✅ Protocol Inspector dashboard
 ✅ Browser-verified end-to-end
+
+## V0.1.1 — Hardening (DONE)
+
+✅ Real MCP stdio transport (`@modelcontextprotocol/sdk`)
+✅ Persistent journal + replay (JSONL, single process)
+✅ Bearer-token identity, secure mode, admin registration
+✅ Policies, approver chain, veto, single-use task-bound approvals
+✅ Hash-chained ledger + `/api/integrity`
+✅ Conversation TTL
+✅ 55 automated tests; tsc + lint clean
 
 ## V0.2 — Real Agent Integration (next)
 
@@ -20,8 +30,9 @@
 - [ ] Tool handlers unchanged — only transport adapter changes
 
 ### Persistent storage
-- [ ] Prisma schema for all entities (Agent, Task, Decision, Evidence, Approval, LedgerEvent)
-- [ ] Migrate in-memory store to Prisma-backed store
+- [x] Durable storage: JSONL journal + replay (V0.1.1)
+- [ ] Database-backed journal for multi-instance (Postgres / SQLite)
+- [ ] External enforcement: GitHub required status check + Claude Code hooks so gates hold outside NeuralOps
 - [ ] API surface unchanged (store.ts implementation swaps)
 
 ### Accurate tokenization

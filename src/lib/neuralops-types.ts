@@ -25,6 +25,20 @@ export interface Agent {
   status: AgentStatus
   subscriptions: string[]
   createdAt: string
+  /** Policies this agent is the named approver for, e.g. "complete/production". */
+  approverFor?: string[]
+}
+
+export interface Policy {
+  id: string
+  action: string
+  scope: string
+  approver: string
+}
+
+export interface Gate {
+  action: string
+  scope: string
 }
 
 export type TaskStatus =
@@ -49,6 +63,7 @@ export interface HandoffRecord {
   accepted: boolean | null
   acceptedAt?: string
   rejectedReason?: string
+  statusBefore?: TaskStatus
 }
 
 export interface Task {
@@ -65,10 +80,14 @@ export interface Task {
   constraints: string[]
   openItems: string[]
   nextSteps: string[]
+  gates?: Gate[]
   resultRef: string | null
   progress: number
+  eta?: string | null
   blockedReason: string | null
   pendingHandoffTo: string | null
+  escalatedTo?: string | null
+  createdBy?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -89,6 +108,9 @@ export interface Approval {
   reason: string | null
   references: string[]
   timestamp: string
+  /** Approvals are single-use: set when the gated act they unlocked ran. */
+  consumedAt?: string | null
+  consumedBy?: string | null
 }
 
 export type ActFamily =
@@ -100,6 +122,7 @@ export type ActFamily =
   | 'lifecycle'
 
 export type ActType =
+  | 'create_task'
   | 'claim' | 'release' | 'complete' | 'block' | 'status'
   | 'handoff' | 'accept_handoff' | 'reject_handoff'
   | 'evidence' | 'decision' | 'update'
@@ -114,6 +137,7 @@ export interface LedgerEvent {
   actId: string
   actType: ActType
   actor: string
+  via?: 'token' | 'impersonated' | 'system'
   taskId: string | null
   intent: string | null
   before: Record<string, unknown>
@@ -121,6 +145,9 @@ export interface LedgerEvent {
   references: string[]
   deltaSummary: string
   timestamp: string
+  history?: boolean
+  prevHash?: string
+  hash?: string
 }
 
 export interface Workspace {
@@ -131,12 +158,15 @@ export interface Workspace {
 }
 
 export interface NeuralOpsState {
+  mode?: 'demo' | 'secure'
   workspace: Workspace | null
   agents: Agent[]
   tasks: Task[]
   approvals: Approval[]
   ledger: LedgerEvent[]
   ledgerTotal: number
+  policies?: Policy[]
+  ledgerHead?: string
 }
 
 export interface FamiliesResponse {
@@ -150,6 +180,7 @@ export interface ContextComparison {
   fullTokens: number
   compactedTokens: number
   reductionPct: number
+  method?: string
   fullFormatted: string
   compactedFormatted: string
 }
@@ -171,6 +202,8 @@ export interface ActResult {
   ledgerEvent?: LedgerEvent
   approval?: Approval | null
   error?: string
+  errorCode?: 'invalid' | 'unauthenticated' | 'forbidden' | 'not_found' | 'conflict' | 'too_large'
+  message?: string
   stateChanged: boolean
   task?: Task | null
 }
@@ -187,7 +220,7 @@ export const FAMILY_HUE: Record<ActFamily, string> = {
 
 // Static act → family map (fallback if /api/families hasn't loaded yet).
 export const ACT_FAMILY_STATIC: Record<ActType, ActFamily> = {
-  claim: 'task', release: 'task', complete: 'task', block: 'task', status: 'task',
+  create_task: 'task', claim: 'task', release: 'task', complete: 'task', block: 'task', status: 'task',
   handoff: 'handoff', accept_handoff: 'handoff', reject_handoff: 'handoff',
   evidence: 'information', decision: 'information', update: 'information',
   question: 'conversation', answer: 'conversation', proposal: 'conversation', counter: 'conversation',
