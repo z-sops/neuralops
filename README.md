@@ -17,6 +17,8 @@ Gemini CLI  ─┘               :3031              └─ gate-check (CI) · Pr
 - **Secure mode**: bearer tokens with expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
 - **127 automated tests**
 
+**Evaluating NeuralOps?** Read the [Pitch & Test Guide](docs/PITCH.md): features, competitor comparison, per-agent enforcement, and a 30-minute two-agent test.
+
 ## Quick start (local demo)
 
 Requires [Bun](https://bun.sh) and [Caddy](https://caddyserver.com/download).
