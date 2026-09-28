@@ -30,7 +30,7 @@
 
 | Component | Status | Detail |
 |-----------|--------|--------|
-| External enforcement | ✅ V0.1.2 | Claude Code PreToolUse hook + GitHub required check (`gate-check`) + verified CI evidence. Codex/Gemini ke liye sirf CI check |
+| External enforcement | ✅ V0.1.2–0.1.3 | Pre-tool hooks for Claude Code, Codex CLI (PreToolUse) and Gemini CLI (BeforeTool) + git pre-commit + GitHub required check + verified CI evidence |
 | Multi-workspace / multi-tenant | ❌ | Single workspace |
 | Real tokenizers | ❌ Approximate | chars/4 |
 | Multi-instance storage | ❌ | Journal single-process JSONL file |

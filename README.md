@@ -15,7 +15,7 @@ Gemini CLI  ─┘               :3031              └─ gate-check (CI) · Pr
 - **Verified evidence**: only CI (or another `attest` agent) can satisfy gates like "tests must pass"
 - **Event-sourced**: HMAC-signed journal, hash-chained ledger, replay on boot, `/api/integrity`
 - **Secure mode**: bearer tokens with expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
-- **122 automated tests**
+- **127 automated tests**
 
 ## Quick start (local demo)
 
@@ -25,7 +25,7 @@ Requires [Bun](https://bun.sh) and [Caddy](https://caddyserver.com/download).
 # 1. core
 cd mini-services/neuralops-mcp
 bun install
-bun test            # 122 pass
+bun test            # 127 pass
 bun run dev         # 127.0.0.1:3031
 
 # 2. dashboard (new terminal, repo root)
@@ -48,7 +48,7 @@ claude mcp add neuralops \
 ```
 
 Enforcement outside the model:
-- Claude Code hook: `mini-services/neuralops-mcp/integrations/claude-code/settings.example.json`
+- Pre-tool hooks (same rules for all three): Claude Code `integrations/claude-code/settings.example.json` · Codex CLI `integrations/codex/config.toml` · Gemini CLI `integrations/gemini/settings.json` (all under `mini-services/neuralops-mcp/`)
 - git pre-commit (any agent): `bun run install-git-hook -- --repo <worktree> --token <agent token>` (in `mini-services/neuralops-mcp`)
 - GitHub required check: `mini-services/neuralops-mcp/integrations/github/neuralops-gate.yml`
 

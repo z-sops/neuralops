@@ -258,3 +258,59 @@ describe('Claude Code hook: edits vs reservations', () => {
     expect(strict.err).toMatch(/reserve README\.md first/)
   })
 })
+
+describe('Codex CLI and Gemini CLI hooks (same rules, their tool names)', () => {
+  const ROOT_HOOKS = join(ROOT, 'src/hooks')
+  let proj: string
+  beforeAll(() => {
+    proj = mkdtempSync(join(tmpdir(), 'neuralops-cli-'))
+  })
+  beforeEach(() => genesis('demo', SEEDED_AT))
+
+  const run = (script: string, token: string, payload: unknown, env: Record<string, string> = {}) =>
+    sh([process.execPath, join(ROOT_HOOKS, script)], {
+      cwd: proj,
+      env: { NEURALOPS_URL: base, NEURALOPS_TOKEN: token, CLAUDE_PROJECT_DIR: proj, ...env },
+      stdin: JSON.stringify({ cwd: proj, ...(payload as object) }),
+    })
+
+  const patch = (file: string) =>
+    `*** Begin Patch\n*** Update File: ${file}\n@@\n-old\n+new\n*** End Patch\n`
+
+  test('editedFiles reads every path out of a Codex patch', async () => {
+    const { editedFiles } = await import('../src/hooks/tool-input.ts')
+    const p = '*** Begin Patch\n*** Add File: a/new.ts\n+x\n*** Update File: b/old.ts\n*** Move to: b/renamed.ts\n*** Delete File: c/gone.ts\n*** End Patch'
+    expect(editedFiles('apply_patch', { input: p }).sort()).toEqual(['a/new.ts', 'b/old.ts', 'b/renamed.ts', 'c/gone.ts'])
+    expect(editedFiles('write_file', { file_path: 'x.ts', content: 'y' })).toEqual(['x.ts'])
+  })
+
+  test('Codex: apply_patch on a file another agent reserved is blocked', async () => {
+    ok(act('agent.security', 'claim', { taskId: 'task_43' }))
+    const r = await run('codex-pretooluse.ts', 'nops_demo_security', { tool_name: 'apply_patch', tool_input: { command: patch(AUTH) } })
+    expect(r.code).toBe(2)
+    expect(r.err).toMatch(/reserved by agent\.backend/)
+    expect((await run('codex-pretooluse.ts', 'nops_demo_security', { tool_name: 'apply_patch', tool_input: { command: patch('docs/review.md') } })).code).toBe(0)
+  })
+
+  test('Codex: Bash deploy without an approved deploy gate is blocked', async () => {
+    const r = await run('codex-pretooluse.ts', 'nops_demo_backend', { tool_name: 'Bash', tool_input: { command: 'vercel deploy --prod' } }, { NEURALOPS_TASK: 'task_42' })
+    expect(r.code).toBe(2)
+    expect(r.err).toMatch(/deploy\/production is not cleared/)
+  })
+
+  test('Gemini: write_file / replace on a reserved file is blocked; free files pass', async () => {
+    ok(act('agent.security', 'claim', { taskId: 'task_43' }))
+    const w = await run('gemini-beforetool.ts', 'nops_demo_security', { tool_name: 'write_file', tool_input: { file_path: join(proj, AUTH), content: 'x' } })
+    expect(w.code).toBe(2)
+    const rpl = await run('gemini-beforetool.ts', 'nops_demo_security', { tool_name: 'replace', tool_input: { file_path: AUTH, old_string: 'a', new_string: 'b' } })
+    expect(rpl.code).toBe(2)
+    expect((await run('gemini-beforetool.ts', 'nops_demo_security', { tool_name: 'write_file', tool_input: { file_path: 'docs/x.md', content: 'x' } })).code).toBe(0)
+  })
+
+  test('Gemini: run_shell_command git push to main before clearance is blocked', async () => {
+    const r = await run('gemini-beforetool.ts', 'nops_demo_backend', { tool_name: 'run_shell_command', tool_input: { command: 'git push origin main' } }, { NEURALOPS_TASK: 'task_42' })
+    expect(r.code).toBe(2)
+    expect(r.err).toMatch(/push to main/)
+    expect((await run('gemini-beforetool.ts', 'nops_demo_backend', { tool_name: 'read_file', tool_input: { file_path: AUTH } })).code).toBe(0)
+  })
+})

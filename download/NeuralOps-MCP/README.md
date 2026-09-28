@@ -66,7 +66,8 @@ Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, 
 - ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
 - ✅ File reservations: conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits
 - ✅ 122 automated tests; tsc + lint clean (frontend + backend)
-- 📋 Next: multi-workspace, DB-backed journal, hooks for Codex/Gemini CLI
+- ✅ Hooks for Claude Code, Codex CLI and Gemini CLI (same rules, one implementation)
+- 📋 Next: multi-workspace, DB-backed journal
 
 ---
 

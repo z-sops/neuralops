@@ -253,3 +253,4 @@ Work Log:
 - Tests: reservations.test.ts (21) incl. a real git repo commit block and the Claude hook; helper seeds at "now" so time-based state is live.
 
 Verification: 122 tests pass; backend + frontend tsc and lint clean; browser via real Caddy: new scenarios + golden path 10/10.
+- Follow-up: Codex CLI (PreToolUse: Bash, apply_patch) and Gemini CLI (BeforeTool: write_file, replace, run_shell_command) now have hooks upstream; the pre-tool hook was generalized to all three CLIs (src/hooks/pretooluse.ts + per-CLI entry points, integrations/codex, integrations/gemini). 127 tests pass.

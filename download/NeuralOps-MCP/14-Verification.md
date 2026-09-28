@@ -7,7 +7,7 @@
 | Check | Command | Result |
 |-------|---------|--------|
 | Backend types | `cd mini-services/neuralops-mcp && bun run typecheck` | ✅ 0 errors |
-| Backend tests | `bun test` | ✅ 122 pass, 0 fail |
+| Backend tests | `bun test` | ✅ 127 pass, 0 fail |
 | Frontend types | `bunx tsc --noEmit` (root) | ✅ 0 errors |
 | Lint | `bun run lint` (root, whole project) | ✅ 0 errors |
 | Build | `bunx next build` | ✅ compiled, 0 warnings |
@@ -22,7 +22,7 @@
 | `http.test.ts` | 10 | Demo impersonation, token identity/spoofing, status codes, 413, tools, integrity, WebSocket, secure mode, admin-only register, WS auth |
 | `mcp.test.ts` | 3 | Real MCP stdio: 38 tools listed, two agents run the approval flow, tool errors |
 | `security.test.ts` | 33 | Loopback binding, signed journal (9 tamper cases), token expiry/revoke/rotate, admin API + audit + replay, rate limit, verified evidence, prompt-injection guard, gate status |
-| `reservations.test.ts` | 21 | Glob overlap, reservation rules, lifecycle (complete/release/handoff/revoke), replay, HTTP, git pre-commit in a real repo, Claude hook on reserved files |
+| `reservations.test.ts` | 26 | Glob overlap, reservation rules, lifecycle (complete/release/handoff/revoke), replay, HTTP, git pre-commit in a real repo, Claude, Codex and Gemini hooks on reserved files, push and deploy |
 | `enforcement.test.ts` | 12 | gate-check CLI exit codes, report-evidence (CI = verified), Claude Code hook: edit / push / deploy / unreachable core |
 
 ## 14.3 Browser (Playwright, real dashboard)

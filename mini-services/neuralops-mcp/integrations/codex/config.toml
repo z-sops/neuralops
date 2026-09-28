@@ -1,0 +1,22 @@
+# NeuralOps hook for Codex CLI — merge into ~/.codex/config.toml, or into
+# <your repo>/.codex/config.toml (project hooks load only when that .codex
+# layer is trusted; Codex asks you to review and trust a hook before it runs).
+#
+# Identity: Codex passes its environment to the hook. Either start Codex with
+#   NEURALOPS_TOKEN=<this agent's token> NEURALOPS_URL=http://127.0.0.1:3031 codex
+# or store the token once per worktree (also used by the git pre-commit hook):
+#   bun run install-git-hook -- --repo <worktree> --token <token> --url http://127.0.0.1:3031
+#
+# Use forward slashes in the path, also on Windows.
+
+[features]
+hooks = true   # only needed on Codex versions where hooks are behind a feature flag
+
+[[hooks.PreToolUse]]
+matcher = "^(Bash|apply_patch)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "bun D:/Projects/neuralops/mini-services/neuralops-mcp/src/hooks/codex-pretooluse.ts"
+timeout = 30
+statusMessage = "NeuralOps: checking task, file reservations and gates"

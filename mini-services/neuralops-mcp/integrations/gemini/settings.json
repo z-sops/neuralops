@@ -1,0 +1,18 @@
+{
+  "$comment": "Merge into <your repo>/.gemini/settings.json (or ~/.gemini/settings.json). NEURALOPS_TOKEN comes from the environment Gemini CLI was started with, or from <git-dir>/neuralops-token written by install-git-hook. Forward slashes in the path, also on Windows.",
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "^(write_file|replace|run_shell_command)$",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "neuralops",
+            "command": "bun D:/Projects/neuralops/mini-services/neuralops-mcp/src/hooks/gemini-beforetool.ts",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}

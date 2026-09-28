@@ -56,15 +56,15 @@ src/
   engines/paths.ts     glob matching + conservative overlap
   engines/reservations.ts  file reservations (who may change which files)
   cli/                 gate-check, report-evidence, install-git-hook
-  hooks/               Claude Code PreToolUse hook, git pre-commit hook
-integrations/          GitHub workflow, Claude Code settings example
-tests/                 122 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations
+  hooks/               pre-tool hook for Claude Code / Codex / Gemini CLI, git pre-commit hook
+integrations/          GitHub workflow; Claude Code, Codex CLI and Gemini CLI hook configs
+tests/                 127 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations
 ```
 
 ## Verify
 
 ```bash
-bun test            # 122 tests
+bun test            # 127 tests
 bun run typecheck
 curl localhost:3031/api/integrity   # hash chain + replay check
 ```
@@ -73,7 +73,7 @@ Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Securi
 
 ## Enforce outside the model
 
-- **Claude Code hook:** merge `integrations/claude-code/settings.example.json` into your app repo's `.claude/settings.json`.
+- **Pre-tool hooks:** Claude Code `integrations/claude-code/settings.example.json` · Codex CLI `integrations/codex/config.toml` · Gemini CLI `integrations/gemini/settings.json`.
 - **GitHub:** copy `integrations/github/neuralops-gate.yml` to `.github/workflows/`, make `neuralops-gate` a required check.
 - **git pre-commit (every agent):** `bun run install-git-hook -- --repo <worktree> --token <agent token> --url http://127.0.0.1:3031`
 - **CLIs:** `bun run gate-check -- --task task_42` · `bun run report-evidence -- --type test --summary … --ref …`
