@@ -52,9 +52,9 @@ describe('demo mode', () => {
     expect((await call(base, 'GET', '/api/nope')).status).toBe(404)
   })
 
-  test('tools: 38 listed, act tools need an identity, errors carry codes', async () => {
+  test('tools: 39 listed, act tools need an identity, errors carry codes', async () => {
     const tools = await call(base, 'GET', '/api/tools')
-    expect(tools.data).toHaveLength(38)
+    expect(tools.data).toHaveLength(39)
     const anon = await call(base, 'POST', '/api/tools/neuralops_claim', { taskId: 'task_44' })
     expect(anon.status).toBe(403)
     const inbox = await call(base, 'POST', '/api/tools/neuralops_inbox', {}, { 'X-Agent-Id': 'agent.qa' })

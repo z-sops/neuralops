@@ -35,8 +35,12 @@ async function main(): Promise<number> {
   }
   let results: Check[]
   try {
-    const { status, data } = await call<{ results?: Check[]; error?: string }>('POST', '/api/reservations/check', { paths: files })
+    const { status, data } = await call<{ results?: Check[]; frozen?: { reason: string; by: string } | null; error?: string }>('POST', '/api/reservations/check', { paths: files })
     if (status !== 200 || !data.results) throw new Error(data.error ?? `HTTP ${status}`)
+    if (data.frozen) {
+      console.error(`NeuralOps pre-commit: BLOCKED — the workspace is FROZEN (incident mode) by ${data.frozen.by}: ${data.frozen.reason}`)
+      return 1
+    }
     results = data.results
   } catch (e) {
     const msg = `NeuralOps pre-commit: core unreachable at ${BASE} (${(e as Error).message})`

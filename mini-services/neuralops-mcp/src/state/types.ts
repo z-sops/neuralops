@@ -173,6 +173,8 @@ export interface Approval {
   // Single use: an approved approval is consumed by the act it unlocked.
   consumedAt: string | null
   consumedBy: string | null // act id
+  /** What exactly is being approved (e.g. the tool call and its arguments), shown to the approver. */
+  detail?: string
 }
 
 export type ExchangeStatus = 'open' | 'answered' | 'countered' | 'expired'
@@ -249,6 +251,14 @@ export type AdminRecord =
   | { k: 'authority_set'; agentId: string; authority: AuthorityScope[]; by: string; at: string }
   | { k: 'token'; agentId: string; tokenHash: string; expiresAt: string | null; replaceExisting: boolean; by: string; at: string }
   | { k: 'revoke'; agentId: string; by: string; at: string }
+  | { k: 'freeze'; frozen: boolean; reason: string; by: string; at: string }
+
+/** Kill switch state (incident mode). */
+export interface FreezeState {
+  reason: string
+  by: string
+  at: string
+}
 
 export type JournalRecord =
   | { k: 'genesis'; seed: 'demo' | 'empty'; seededAt: string; version: 1 }

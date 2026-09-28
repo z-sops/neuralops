@@ -19,6 +19,9 @@
 // NEURALOPS_BACKUPS                 journal backups to keep (default 10)
 // NEURALOPS_CORS_ORIGIN             default "*" in demo mode, unset (same-origin) in secure
 // NEURALOPS_ALLOW_DEMO_ON_NETWORK   "1" to let demo mode bind a non-loopback host (not recommended)
+// NEURALOPS_MCP_URL_TOKENS          "1" also accepts the agent token in the MCP URL (POST /mcp/<token>)
+//                                   for MCP hosts that cannot send an Authorization header. The token
+//                                   then appears in URLs/logs — prefer the header.
 
 export type Mode = 'demo' | 'secure'
 
@@ -34,6 +37,7 @@ export interface Config {
   backups: number
   corsOrigin: string | null
   seedOnEmpty: boolean
+  mcpUrlTokens: boolean
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -79,5 +83,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     backups: Math.max(0, Number(env.NEURALOPS_BACKUPS ?? 10)),
     corsOrigin: env.NEURALOPS_CORS_ORIGIN ?? (mode === 'demo' ? '*' : null),
     seedOnEmpty: mode === 'demo',
+    mcpUrlTokens: env.NEURALOPS_MCP_URL_TOKENS === '1',
   }
 }

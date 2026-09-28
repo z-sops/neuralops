@@ -1,7 +1,7 @@
 # NeuralOps MCP — Product Documentation Package
 
 > **AI Workforce Coordination Protocol**
-> V0.1.3 — File reservations (see `17-…`, `18-…`, `19-V0.1.3-File-Reservations.md`)
+> V0.1.4 — Nexus Gate: gated tool calls, streamable-HTTP MCP, Python guard, kill switch (see `20-V0.1.4-Nexus-Gate.md`)
 
 ---
 
@@ -19,10 +19,10 @@ NeuralOps-MCP/
 ├── 01-Product-Identity.md                 ← naam, positioning, killer feature
 ├── 02-Problem-Solution.md                 ← kya problem, NeuralOps kya karta hai
 ├── 03-Architecture.md                     ← topology, components, separation
-├── 04-Coordination-Protocol.md            ← act envelope, 23 acts, 6 families
+├── 04-Coordination-Protocol.md            ← act envelope, 6 families (ab 26 acts)
 ├── 05-State-Layer.md                      ← entities, ledger, design principle
 ├── 06-Engines.md                          ← task-manager, authority, context
-├── 07-MCP-Tools.md                        ← 38 tools, real MCP stdio transport
+├── 07-MCP-Tools.md                        ← 39 tools, MCP stdio + streamable HTTP
 ├── 08-API-Reference.md                    ← REST + WebSocket full reference
 ├── 09-Demo-Seed.md                        ← Engineering workspace scenario
 ├── 10-Protocol-Inspector.md               ← dashboard sections + tech stack
@@ -34,7 +34,8 @@ NeuralOps-MCP/
 ├── 16-Files-Index.md                      ← sab files ka index
 ├── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, MCP setup, tests
 ├── 18-V0.1.2-Security.md                  ← V0.1.2: gateway, signed journal, tokens, CI/hook enforcement
-└── 19-V0.1.3-File-Reservations.md         ← V0.1.3: file reservations + git pre-commit for every agent
+├── 19-V0.1.3-File-Reservations.md         ← V0.1.3: file reservations + git pre-commit for every agent
+└── 20-V0.1.4-Nexus-Gate.md                ← V0.1.4: NeuralOps Nexus ke liye: perform, /mcp, Python guard, kill switch
 ```
 
 ## Kaise read karein
@@ -50,7 +51,7 @@ NeuralOps-MCP/
 
 NeuralOps MCP ek **coordination layer** hai jo customer ke existing AI agents (Claude, Codex, Gemini, Qwen) ke beech baith ke unhe organize karta hai. Yeh agents ko replace nahi karta — unhe ek shared workplace deta hai jahan:
 
-1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval, file reservation — 25 types total)
+1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval, file reservation, perform — 26 types total)
 2. **Immutable ledger** mein har kaam record hota hai with before→after deltas
 3. **Authority engine** enforce karta hai kaun kya kar sakta hai (production deploy ke liye approval chahiye)
 4. **Context compaction**: agent ko poori history ki bajaye chhota structured snapshot milta hai — demo pe **~70–81% kam tokens** (chars/4 estimate)
@@ -60,13 +61,15 @@ Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, 
 ## Status
 
 - ✅ Coordination Core (port 3031): persistent journal, hash-chained ledger, secure mode
-- ✅ Real MCP stdio server (34 tools)
+- ✅ Real MCP server: stdio + streamable HTTP `/mcp` (39 tools)
 - ✅ Enforcement outside the model: Claude Code hook + GitHub required check + verified CI evidence
 - ✅ Signed journal, token expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
 - ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
 - ✅ File reservations: conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits
-- ✅ 122 automated tests; tsc + lint clean (frontend + backend)
+- ✅ 140 automated tests; tsc + lint clean (frontend + backend)
 - ✅ Hooks for Claude Code, Codex CLI and Gemini CLI (same rules, one implementation)
+- ✅ NeuralOps Nexus: gated tool calls (`perform`), Python guard for nexus-ai, kill switch
+- ✅ License: Apache-2.0
 - 📋 Next: multi-workspace, DB-backed journal
 
 ---

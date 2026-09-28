@@ -250,9 +250,10 @@ export function getInbox(agentId: string) {
     escalatedToMe: tasks
       .filter((t) => t.escalatedTo === agentId)
       .map((t) => ({ taskId: t.id, reason: t.blockedReason })),
-    approvalsToDecide: [...store.approvals.values()].filter(
-      (a) => a.status === 'pending' && a.approver === agentId
-    ),
+    // `detail` is written by the requesting agent (tool arguments): shown as flagged data.
+    approvalsToDecide: [...store.approvals.values()]
+      .filter((a) => a.status === 'pending' && a.approver === agentId)
+      .map((a) => (a.detail ? { ...a, detail: untrusted(a.detail, 1000) } : a)),
     myPendingApprovals: [...store.approvals.values()].filter(
       (a) => a.requestedBy === agentId && (a.status === 'pending' || (a.status === 'approved' && !a.consumedAt))
     ),

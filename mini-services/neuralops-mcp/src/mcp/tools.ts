@@ -1,6 +1,6 @@
 // MCP Tool Registry
 //
-// One tool per act type (`neuralops_<act>`, 23 total) plus query tools.
+// One tool per act type (`neuralops_<act>`, 26 total) plus query tools.
 // Act tool input schemas are generated from PAYLOAD_SCHEMAS, so the tool
 // surface can never drift from what the dispatcher validates.
 //
@@ -184,7 +184,7 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
       }
       case 'neuralops_inbox':
         parseArgs(name, args)
-        return { ok: true, result: getInbox(requireAgent(caller)) }
+        return { ok: true, result: { ...getInbox(requireAgent(caller)), frozen: store.freeze } }
       case 'neuralops_get_task_context': {
         const { taskId, format } = parseArgs(name, args)
         const ctx = getCompactedContext(taskId)
@@ -247,6 +247,7 @@ function actToolResult(res: ActResult): ToolResult {
       approval: res.approval,
       task: res.task,
       reservation: res.reservation,
+      ...(res.allowed === undefined ? {} : { allowed: res.allowed }),
       ledgerEvent: res.ledgerEvent
         ? { seq: res.ledgerEvent.seq, deltaSummary: res.ledgerEvent.deltaSummary, hash: res.ledgerEvent.hash }
         : null,

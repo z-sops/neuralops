@@ -38,7 +38,7 @@ See `.mcp.example.json` for a project-scoped config. The stdio server is statele
 src/
   config.ts            env → Config (demo | secure)
   errors.ts            typed errors → HTTP status
-  protocol/            act types (23), envelope, per-act zod payloads (single registry)
+  protocol/            act types (26), envelope, per-act zod payloads (single registry)
   state/               types, store (hash-chained ledger, journal, deterministic ids)
   engines/
     task-manager.ts    dispatcher: validate → check → mutate → ledger → journal
@@ -46,8 +46,9 @@ src/
     context.ts         compaction, full context, inbox
     agents.ts          registration + token identity (sha256 only)
     replay.ts          genesis, replay, integrity check, JSONL journal file
-  mcp/tools.ts         38 tools, schemas generated from the zod payloads
+  mcp/tools.ts         39 tools, schemas generated from the zod payloads
   mcp/stdio.ts         real MCP stdio server (proxy to the core)
+  mcp/http.ts          streamable-HTTP MCP at POST /mcp (per-agent bearer token)
   server/              HTTP door, identity, WebSocket
   seed/demo.ts         Engineering demo workspace (deterministic)
   engines/admin.ts     policies, authority, token rotate/revoke (audited)
@@ -57,19 +58,19 @@ src/
   engines/reservations.ts  file reservations (who may change which files)
   cli/                 gate-check, report-evidence, install-git-hook
   hooks/               pre-tool hook for Claude Code / Codex / Gemini CLI, git pre-commit hook
-integrations/          GitHub workflow; Claude Code, Codex CLI and Gemini CLI hook configs
-tests/                 127 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations
+integrations/          GitHub workflow; Claude Code, Codex CLI and Gemini CLI hook configs; nexus/ (Python guard for NeuralOps Nexus)
+tests/                 140 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations, nexus
 ```
 
 ## Verify
 
 ```bash
-bun test            # 127 tests
+bun test            # 140 tests (the Python guard test needs python3)
 bun run typecheck
 curl localhost:3031/api/integrity   # hash chain + replay check
 ```
 
-Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`.
+Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`, `20-V0.1.4-Nexus-Gate.md`.
 
 ## Enforce outside the model
 

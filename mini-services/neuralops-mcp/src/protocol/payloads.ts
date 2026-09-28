@@ -181,6 +181,14 @@ export const RequestApprovalPayload = z.object({
   scope: text(64).describe('"production" | "staging" ...'),
 })
 
+export const PerformPayload = z.object({
+  action: text(64).describe('What you are about to do, e.g. "odoo.write", "email.send", "tool.create_invoice"'),
+  scope: text(64).default('production').describe('"production" (default) | "staging" | ...'),
+  taskId: id.optional().describe('Task this action belongs to, if any'),
+  target: text(200).optional().describe('The tool or resource, e.g. "odoo/create_invoice"'),
+  detail: text(1000).optional().describe('Exactly what will happen (tool arguments), shown to the approver'),
+})
+
 export const AuthorizePayload = z.object({ approvalId: id })
 
 export const DenyPayload = z.object({
@@ -228,6 +236,7 @@ export const PAYLOAD_SCHEMAS = {
   counter: CounterPayload,
   request_approval: RequestApprovalPayload,
   authorize: AuthorizePayload,
+  perform: PerformPayload,
   deny: DenyPayload,
   escalate: EscalatePayload,
   subscribe: SubscribePayload,

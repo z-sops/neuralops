@@ -20,6 +20,7 @@
 //       → this agent must own an in-progress task.
 //   shell: deploy/publish commands (vercel --prod, npm publish, fly deploy, …)
 //       → gate deploy/<scope> must be cleared for the task.
+//   workspace frozen (kill switch) → every edit, push and deploy is blocked.
 //
 // Task id: NEURALOPS_TASK, else task_… in the command, else the git branch.
 // Env: NEURALOPS_URL, NEURALOPS_TOKEN (this agent's token), NEURALOPS_SCOPE (default production)
@@ -85,11 +86,13 @@ async function readStdin(): Promise<string> {
 }
 
 async function ownsActiveTask(): Promise<{ ok: boolean; tasks: string[] }> {
-  const { status, data } = await call<{ myTasks?: Array<{ id: string; status: string }>; error?: string }>(
-    'GET',
-    '/api/inbox'
-  )
+  const { status, data } = await call<{
+    myTasks?: Array<{ id: string; status: string }>
+    frozen?: { reason: string; by: string; at: string } | null
+    error?: string
+  }>('GET', '/api/inbox')
   if (status !== 200) throw new Error(data.error ?? `HTTP ${status}`)
+  if (data.frozen) block(`the workspace is FROZEN (incident mode) by ${data.frozen.by}: ${data.frozen.reason}. Stop and wait for a human to unfreeze it.`)
   const tasks = (data.myTasks ?? []).filter((t) => t.status === 'in_progress').map((t) => t.id)
   return { ok: tasks.length > 0, tasks }
 }

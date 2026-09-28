@@ -1,4 +1,4 @@
-# NeuralOps MCP — Verification Status (V0.1.3)
+# NeuralOps MCP — Verification Status (V0.1.4)
 
 > V0.1 ki verification mein "Lint 0 errors" aur "all golden path steps work" likha tha, lekin `tsc` ke 26 errors, lint ke 7 errors, aur 2 act types crash karte thay. V0.1.1 mein har claim neeche wale command se dobara check ho sakta hai.
 
@@ -7,7 +7,7 @@
 | Check | Command | Result |
 |-------|---------|--------|
 | Backend types | `cd mini-services/neuralops-mcp && bun run typecheck` | ✅ 0 errors |
-| Backend tests | `bun test` | ✅ 127 pass, 0 fail |
+| Backend tests | `bun test` | ✅ 140 pass, 0 fail |
 | Frontend types | `bunx tsc --noEmit` (root) | ✅ 0 errors |
 | Lint | `bun run lint` (root, whole project) | ✅ 0 errors |
 | Build | `bunx next build` | ✅ compiled, 0 warnings |
@@ -17,13 +17,15 @@
 | File | Tests | Covers |
 |------|-------|--------|
 | `regressions.test.ts` | 14 | Har V0.1 review bug (#1–#12) + wildcard + ledger contiguity |
-| `protocol.test.ts` | 21 | Golden path, all 25 act types, authority, ownership, conversations/TTL, validation, atomicity, idempotency, context, inbox |
+| `protocol.test.ts` | 21 | Golden path, all 26 act types, authority, ownership, conversations/TTL, validation, atomicity, idempotency, context, inbox |
 | `replay.test.ts` | 8 | Replay = same state hash, tamper detection, restart persistence, torn line, divergence refusal, reseed truncation |
 | `http.test.ts` | 10 | Demo impersonation, token identity/spoofing, status codes, 413, tools, integrity, WebSocket, secure mode, admin-only register, WS auth |
-| `mcp.test.ts` | 3 | Real MCP stdio: 38 tools listed, two agents run the approval flow, tool errors |
+| `mcp.test.ts` | 3 | Real MCP stdio: 39 tools listed, two agents run the approval flow, tool errors |
 | `security.test.ts` | 33 | Loopback binding, signed journal (9 tamper cases), token expiry/revoke/rotate, admin API + audit + replay, rate limit, verified evidence, prompt-injection guard, gate status |
 | `reservations.test.ts` | 26 | Glob overlap, reservation rules, lifecycle (complete/release/handoff/revoke), replay, HTTP, git pre-commit in a real repo, Claude, Codex and Gemini hooks on reserved files, push and deploy |
-| `enforcement.test.ts` | 12 | gate-check CLI exit codes, report-evidence (CI = verified), Claude Code hook: edit / push / deploy / unreachable core |
+| `enforcement.test.ts` | 13 | gate-check CLI exit codes, report-evidence (CI = verified), Claude Code hook: edit / push / deploy / unreachable core / frozen workspace |
+| `nexus.test.ts` | 11 | `perform` rules, veto, wildcard policy, flagged approval detail, freeze + restart + replay, freeze API, `/mcp` with a real MCP SDK client and per-persona tokens |
+| `nexus-guard.test.ts` | 1 (7 Python) | `integrations/nexus/test_guard.py` against a live secure core, including a real pydantic-ai agent |
 
 ## 14.3 Browser (Playwright, real dashboard)
 

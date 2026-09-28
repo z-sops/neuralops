@@ -36,12 +36,20 @@
 ✅ Follows the task (auto-release on complete/release, moves on handoff, released on revoke)
 ✅ Enforced on edits (Claude Code hook) and commits (git pre-commit, every agent)
 
+## V0.1.4 — Nexus Gate (DONE)
+
+✅ `perform` act: gate + log every tool call before it runs
+✅ Streamable-HTTP MCP (`/mcp`) with per-persona tokens
+✅ Python guard for nexus-ai (pydantic-ai `process_tool_call`, decorator)
+✅ Kill switch (freeze / unfreeze)
+✅ Apache-2.0 license
+
 ## V0.2 — Real Agent Integration (next)
 
 ### Real MCP transport
 - [ ] `@modelcontextprotocol/sdk` integration
 - [ ] stdio transport (for CLI agents: Claude Code, Codex CLI, Gemini CLI)
-- [ ] streamable HTTP transport (for cloud-hosted agents)
+- [x] streamable HTTP transport (V0.1.4, `/mcp`)
 - [ ] Tool handlers unchanged — only transport adapter changes
 
 ### Persistent storage

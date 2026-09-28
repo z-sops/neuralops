@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { createApp, type App } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
 import { genesis } from '../src/engines/replay.js'
+import { freezeWorkspace, unfreezeWorkspace } from '../src/engines/admin.js'
 import { act, ok, SEEDED_AT, store } from './helpers.js'
 
 const ROOT = join(import.meta.dir, '..')
@@ -101,6 +102,20 @@ describe('report-evidence CLI', () => {
 describe('Claude Code PreToolUse hook', () => {
   const edit = { tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }
   const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
+
+  test('kill switch: a frozen workspace blocks edits and deploys', async () => {
+    const deploy = bash('vercel --prod')
+    expect((await hook('nops_demo_backend', edit)).code).toBe(0)
+    freezeWorkspace({ reason: 'incident 12' }, 'admin')
+    const e = await hook('nops_demo_backend', edit)
+    expect(e.code).toBe(2)
+    expect(e.err).toMatch(/FROZEN .*incident 12/)
+    const d = await hook('nops_demo_architect', deploy, { NEURALOPS_TASK: 'task_42' })
+    expect(d.code).toBe(2)
+    expect(d.err).toMatch(/FROZEN/)
+    unfreezeWorkspace({}, 'admin')
+    expect((await hook('nops_demo_backend', edit)).code).toBe(0)
+  })
 
   test('edits need an in-progress task owned by this agent', async () => {
     expect((await hook('nops_demo_backend', edit)).code).toBe(0) // owns task_42

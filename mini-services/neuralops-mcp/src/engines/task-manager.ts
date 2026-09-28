@@ -51,6 +51,8 @@ export interface ActResult {
   task?: Task
   message?: string
   reservation?: Reservation
+  /** perform: may the action run now? */
+  allowed?: boolean
   error?: string
   errorCode?: ErrorCode
 }
@@ -263,6 +265,10 @@ export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult
     }
     if (actor.revokedAt) {
       throw forbidden(`${act.from} was revoked at ${actor.revokedAt}; an admin must re-issue its token.`)
+    }
+    if (store.freeze) {
+      const f = store.freeze
+      throw forbidden(`Workspace is FROZEN (incident mode) since ${f.at} by ${f.by}: ${f.reason}. No acts are accepted until an admin unfreezes it.`)
     }
     const schema = PAYLOAD_SCHEMAS[act.type]
     const pr = schema.safeParse(act.payload)
@@ -956,6 +962,58 @@ const handleDeny: Handler<'deny'> = (act, p) => {
   return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 
+const handlePerform: Handler<'perform'> = (act, p) => {
+  const taskId = p.taskId ?? act.taskId ?? null
+  const task = taskId ? requireTask(taskId) : null
+  const what = `${p.action}/${p.scope}${p.target ? ` (${p.target})` : ''}`
+  const detail = [p.target, p.detail].filter(Boolean).join(': ') || undefined
+  const done = (via: string, extra: Record<string, unknown>, summary: string, refs: string[] = []): HandlerOut => {
+    const evt = record(act, task, {}, { performed: true, action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, summary, refs)
+    return { ledgerEvent: evt, approval: null, stateChanged: true, allowed: true, message: `Allowed: ${what} (${via}). Go ahead.` }
+  }
+
+  if (hasAuthority(act.from, p.action, p.scope)) {
+    return done('authority', {}, `${act.from} performed ${what} under direct authority`)
+  }
+  const policy = policyFor(p.action, p.scope)
+  if (!policy) {
+    return done('ungoverned', {}, `${act.from} performed ${what} (no policy governs it)`)
+  }
+  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId)
+  if (granted) {
+    consumeApproval(granted, act.id, act.timestamp)
+    const out = done('approval', { approvalId: granted.id }, `${act.from} performed ${what} with ${granted.id} (approved by ${granted.decidedBy})`, [granted.id])
+    return { ...out, approval: granted }
+  }
+  const existing = findPendingApproval(act.from, p.action, p.scope, taskId)
+  if (existing) {
+    return {
+      ledgerEvent: null,
+      approval: existing,
+      stateChanged: false,
+      allowed: false,
+      message: `Not allowed yet: approval ${existing.id} for ${what} is pending with ${existing.approver}. Do not run it; retry after it is authorized.`,
+    }
+  }
+  const approval = createApproval({
+    requestedBy: act.from,
+    action: p.action,
+    scope: p.scope,
+    taskId,
+    references: act.references,
+    at: act.timestamp,
+    detail,
+  })
+  const evt = record(act, task, {}, { performed: false, pendingApproval: approval.id, approver: approval.approver }, `${act.from} asked to perform ${what} → approval ${approval.id} required from ${approval.approver}`, [approval.id])
+  return {
+    ledgerEvent: evt,
+    approval,
+    stateChanged: true,
+    allowed: false,
+    message: `Not allowed yet: ${what} needs approval ${approval.id} from ${approval.approver} (policy ${policy.id}). Do not run it; retry after it is authorized.`,
+  }
+}
+
 const handleEscalate: Handler<'escalate'> = (act, p) => {
   const task = requireTask(p.taskId)
   requireOpen(task, 'escalate')
@@ -1041,6 +1099,7 @@ const HANDLERS: { [K in ActType]: Handler<K> } = {
   authorize: handleAuthorize,
   deny: handleDeny,
   escalate: handleEscalate,
+  perform: handlePerform,
   subscribe: handleSubscribe,
   unsubscribe: handleUnsubscribe,
   ack: handleAck,

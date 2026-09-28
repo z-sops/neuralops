@@ -7,15 +7,17 @@
 | Component | Status | Detail |
 |-----------|--------|--------|
 | Coordination Core | ✅ Real | Validate → check → mutate → ledger → journal. Rejected acts leave no trace. |
-| Typed acts protocol | ✅ Real | 25 act types, 6 families, har ek ka zod payload; saare 25 ek test mein chalte hain |
+| Typed acts protocol | ✅ Real | 26 act types, 6 families, har ek ka zod payload; saare 26 ek test mein chalte hain |
 | Authority / approvals | ✅ Real | Policies + task gates, approver chain, veto, separation of duties, single-use task-bound approvals |
 | Identity | ✅ Real | Bearer tokens (sha256 stored) with expiry/revoke/rotate, secure mode, demo impersonation marked and loopback-only |
 | Persistence | ✅ Real | HMAC-signed JSONL journal + signed head, replay on boot, tamper refusal, backups |
 | Immutable ledger | ✅ Real | Hash-chained; journal HMAC-signed; tampering detected on boot and by `/api/integrity` |
 | Context compaction | ✅ Real (estimate) | ~70% on fresh seed, ~81% after golden path; chars/4 estimate, labelled |
 | MCP transport | ✅ Real | stdio server via `@modelcontextprotocol/sdk`; 2 agents in 2 processes tested |
-| MCP tool registry | ✅ Real | 38 tools, schemas generated from zod |
+| MCP tool registry | ✅ Real | 39 tools, schemas generated from zod; stdio + streamable HTTP (`/mcp`) |
 | File reservations | ✅ Real (V0.1.3) | Conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits (every agent) |
+| Gated tool calls (Nexus) | ✅ Real (V0.1.4) | `perform` act + Python guard (pydantic-ai `process_tool_call`), tested with a real pydantic-ai agent; not yet run inside a real Nexus deployment |
+| Kill switch | ✅ Real (V0.1.4) | Freeze/unfreeze (admin), journaled, blocks acts, gates, guard, hooks, pre-commit |
 | HTTP REST + WebSocket | ✅ Real | Proper status codes, body limit, WS auth in secure mode |
 | Dashboard | ✅ Real | Browser-tested golden path (10 steps) |
 

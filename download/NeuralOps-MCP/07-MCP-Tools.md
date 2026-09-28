@@ -2,7 +2,9 @@
 
 > V0.1.2: 34 tools (naya: `neuralops_gate_status`), asli MCP stdio transport. Tafseel: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`.
 
-## 7.1 Tool surface (38 tools)
+> V0.1.4: 39 tools (naya: `neuralops_perform`), aur ab streamable HTTP bhi (`POST /mcp`, per-agent bearer token). Dekhein `20-V0.1.4-Nexus-Gate.md`.
+
+## 7.1 Tool surface (39 tools)
 
 ### Query tools (13)
 

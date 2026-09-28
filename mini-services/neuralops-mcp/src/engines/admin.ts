@@ -7,7 +7,7 @@
 import { z } from 'zod'
 import { sha256, store } from '../state/store.js'
 import type { AdminRecord, AuthorityScope, Policy } from '../state/types.js'
-import { invalid, notFound, forbidden } from '../errors.js'
+import { conflict, invalid, notFound, forbidden } from '../errors.js'
 import { formatZodError } from '../protocol/payloads.js'
 import { AuthorityInput, addSeconds, newToken } from './agents.js'
 
@@ -99,6 +99,19 @@ export function applyAdmin(rec: AdminRecord): void {
       audit(rec, { revokedAt: null }, { revokedAt: rec.at }, `${rec.by} REVOKED ${rec.agentId} — all its tokens are invalid`)
       break
     }
+    case 'freeze': {
+      const before = store.freeze
+      store.freeze = rec.frozen ? { reason: rec.reason, by: rec.by, at: rec.at } : null
+      audit(
+        rec,
+        { frozen: !!before, freeze: before },
+        { frozen: rec.frozen, freeze: store.freeze },
+        rec.frozen
+          ? `${rec.by} FROZE the workspace (kill switch): ${rec.reason} — all acts and gates are blocked`
+          : `${rec.by} unfroze the workspace: ${rec.reason}`
+      )
+      break
+    }
   }
   store.journalAppend(structuredClone(rec))
 }
@@ -147,4 +160,26 @@ export function revokeAgent(agentId: string, by: string, at = now()): void {
   const agent = requireAgent(agentId)
   if (agent.revokedAt) return
   applyAdmin({ k: 'revoke', agentId, by, at })
+}
+
+export const FreezeInput = z.object({ reason: z.string().trim().min(1).max(500) })
+
+/** Kill switch: stop every agent at once (incident mode). Admin only. */
+export function freezeWorkspace(raw: unknown, by: string, at = now()) {
+  const { reason } = parse(FreezeInput, raw, 'freeze request')
+  if (store.freeze) throw conflict(`Workspace is already frozen (by ${store.freeze.by} at ${store.freeze.at}: ${store.freeze.reason})`)
+  applyAdmin({ k: 'freeze', frozen: true, reason, by, at })
+  return store.freeze!
+}
+
+export function unfreezeWorkspace(raw: unknown, by: string, at = now()) {
+  const { reason } = parse(z.object({ reason: z.string().trim().min(1).max(500).default('incident resolved') }), raw ?? {}, 'unfreeze request')
+  if (!store.freeze) throw conflict('Workspace is not frozen')
+  applyAdmin({ k: 'freeze', frozen: false, reason, by, at })
+}
+
+/** Throws if the kill switch is on. */
+export function assertNotFrozen(): void {
+  const f = store.freeze
+  if (f) throw forbidden(`Workspace is FROZEN (incident mode) since ${f.at} by ${f.by}: ${f.reason}. No acts are accepted until an admin unfreezes it.`)
 }

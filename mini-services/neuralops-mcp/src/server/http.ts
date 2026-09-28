@@ -15,7 +15,8 @@ import {
 } from '../engines/context.js'
 import { approverFor } from '../engines/authority.js'
 import { demoToken, registerAgent } from '../engines/agents.js'
-import { deletePolicy, revokeAgent, rotateToken, setAuthority, setPolicy } from '../engines/admin.js'
+import { deletePolicy, freezeWorkspace, revokeAgent, rotateToken, setAuthority, setPolicy, unfreezeWorkspace } from '../engines/admin.js'
+import { handleMcpRequest } from '../mcp/http.js'
 import { gateStatus } from '../engines/gate.js'
 import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { genesis, verifyIntegrity, type JournalFile } from '../engines/replay.js'
@@ -31,6 +32,10 @@ const MAX_BODY = 256 * 1024
 class BodyTooLarge extends Error {}
 
 function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return readJson(req).then((v) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}))
+}
+
+function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0
     let tooLarge = false
@@ -50,8 +55,7 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
       const text = Buffer.concat(chunks).toString('utf8')
       if (!text) return resolve({})
       try {
-        const v = JSON.parse(text)
-        resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {})
+        resolve(JSON.parse(text))
       } catch {
         reject(new NeuralOpsError('invalid', 'Body is not valid JSON'))
       }
@@ -69,6 +73,7 @@ export function snapshotState(config?: Pick<Config, 'mode'>) {
     approvals: [...store.approvals.values()],
     policies: [...store.policies.values()],
     reservations: activeReservations(),
+    freeze: store.freeze,
     ledger: store.ledger.slice(-50).reverse(),
     ledgerTotal: store.ledger.length,
     ledgerHead: store.ledgerHead,
@@ -135,7 +140,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
 
     try {
       if (method === 'GET' && path === '/api/health') {
-        return send(res, 200, { ok: true, mode: config.mode, ledgerLength: store.ledger.length })
+        return send(res, 200, { ok: true, mode: config.mode, ledgerLength: store.ledger.length, frozen: !!store.freeze })
       }
 
       if (limiter) {
@@ -143,6 +148,16 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         if (wait > 0) {
           return send(res, 429, { ok: false, error: `Rate limit exceeded; retry in ${wait}s`, errorCode: 'rate_limited' }, { 'Retry-After': String(wait) })
         }
+      }
+
+      // ---- MCP over streamable HTTP (NeuralOps Nexus, remote MCP hosts) ----
+      const mcpPath = path === '/mcp' ? { token: null as string | null } : path.match(/^\/mcp\/([A-Za-z0-9_\-.]+)$/) ? { token: path.slice(5) } : null
+      if (mcpPath) {
+        if (mcpPath.token && !config.mcpUrlTokens) throw notFound('Tokens in the MCP URL are disabled (set NEURALOPS_MCP_URL_TOKENS=1); send Authorization: Bearer <token> to /mcp')
+        const token = mcpPath.token ?? bearer(req.headers.authorization)
+        const caller = resolveCaller(config, token, token ? null : header(req, 'x-agent-id'))
+        const body = method === 'POST' ? await readJson(req) : undefined
+        return await handleMcpRequest(req, res, body, caller)
       }
 
       if (method === 'GET') {
@@ -164,6 +179,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const events = taskId ? store.ledgerForTask(taskId) : store.ledger
           return send(res, 200, events.slice(-limit).reverse())
         }
+        if (path === '/api/freeze') return send(res, 200, { frozen: !!store.freeze, freeze: store.freeze })
         if (path === '/api/integrity') return send(res, 200, verifyIntegrity(deps.journal))
         if (path === '/api/reservations') {
           const agentId = q('agentId')
@@ -173,7 +189,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         if (path === '/api/reservations/check') {
           const paths = url.searchParams.getAll('path')
           if (paths.length === 0) throw new NeuralOpsError('invalid', 'at least one ?path= is required')
-          return send(res, 200, { agentId: caller.agentId, results: checkPaths(caller.agentId, paths.slice(0, 500)) })
+          return send(res, 200, { agentId: caller.agentId, frozen: store.freeze, results: checkPaths(caller.agentId, paths.slice(0, 500)) })
         }
         if (path === '/api/gate/status') {
           const taskId = q('taskId')
@@ -191,7 +207,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         }
         if (path === '/api/inbox') {
           if (!caller.agentId) throw forbidden('Inbox needs an agent identity')
-          return send(res, 200, getInbox(caller.agentId))
+          return send(res, 200, { ...getInbox(caller.agentId), frozen: store.freeze })
         }
         if (path === '/api/evidence' && q('id')) return send(res, 200, getEvidenceById(q('id')!))
         if (path === '/api/decisions' && q('id')) return send(res, 200, getDecisionById(q('id')!))
@@ -236,7 +252,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const caller = callerFor(req, claimed)
           const paths = Array.isArray(body.paths) ? body.paths.map(String).slice(0, 500) : []
           if (paths.length === 0) throw new NeuralOpsError('invalid', 'paths[] is required')
-          return send(res, 200, { agentId: caller.agentId, results: checkPaths(caller.agentId, paths) })
+          return send(res, 200, { agentId: caller.agentId, frozen: store.freeze, results: checkPaths(caller.agentId, paths) })
         }
 
         const toolMatch = path.match(/^\/api\/tools\/([a-zA-Z_]+)$/)
@@ -261,6 +277,18 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const caller = callerFor(req, null)
           requireAdmin(caller)
           return send(res, 201, { ok: true, policy: setPolicy(body, actorOf(caller)) })
+        }
+
+        if (path === '/api/admin/freeze') {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          return send(res, 200, { ok: true, frozen: true, freeze: freezeWorkspace(body, actorOf(caller)) })
+        }
+        if (path === '/api/admin/unfreeze') {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          unfreezeWorkspace(body, actorOf(caller))
+          return send(res, 200, { ok: true, frozen: false })
         }
 
         const am = path.match(/^\/api\/agents\/([^/]+)\/(revoke|rotate)$/)

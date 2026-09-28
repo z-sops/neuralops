@@ -139,6 +139,15 @@ export interface Approval {
   /** Approvals are single-use: set when the gated act they unlocked ran. */
   consumedAt?: string | null
   consumedBy?: string | null
+  /** What exactly is being approved (e.g. a tool call and its arguments). */
+  detail?: string
+}
+
+/** Kill switch: while set, every act is rejected and every gate says no. */
+export interface FreezeState {
+  reason: string
+  by: string
+  at: string
 }
 
 export type ActFamily =
@@ -156,7 +165,7 @@ export type ActType =
   | 'handoff' | 'accept_handoff' | 'reject_handoff'
   | 'evidence' | 'decision' | 'update'
   | 'question' | 'answer' | 'proposal' | 'counter'
-  | 'request_approval' | 'authorize' | 'deny' | 'escalate'
+  | 'request_approval' | 'authorize' | 'deny' | 'escalate' | 'perform'
   | 'subscribe' | 'unsubscribe' | 'ack'
 
 export interface LedgerEvent {
@@ -196,6 +205,7 @@ export interface NeuralOpsState {
   ledgerTotal: number
   policies?: Policy[]
   reservations?: Reservation[]
+  freeze?: FreezeState | null
   ledgerHead?: string
 }
 
@@ -255,6 +265,6 @@ export const ACT_FAMILY_STATIC: Record<ActType, ActFamily> = {
   handoff: 'handoff', accept_handoff: 'handoff', reject_handoff: 'handoff',
   evidence: 'information', decision: 'information', update: 'information',
   question: 'conversation', answer: 'conversation', proposal: 'conversation', counter: 'conversation',
-  request_approval: 'authority', authorize: 'authority', deny: 'authority', escalate: 'authority',
+  request_approval: 'authority', authorize: 'authority', deny: 'authority', escalate: 'authority', perform: 'authority',
   subscribe: 'lifecycle', unsubscribe: 'lifecycle', ack: 'lifecycle',
 }

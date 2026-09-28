@@ -60,6 +60,7 @@ export default function Page() {
       <ArchitectureStrip />
 
       {connection === 'disconnected' && <DisconnectedBanner />}
+      {state.freeze && <FrozenBanner reason={state.freeze.reason} by={state.freeze.by} at={state.freeze.at} />}
 
       <main className="mx-auto w-full max-w-7xl flex-1 space-y-8 px-4 py-6 sm:px-6 sm:py-8">
         {/* Hero strip */}
@@ -139,6 +140,22 @@ export default function Page() {
       </main>
 
       <Footer connection={connection} />
+    </div>
+  )
+}
+
+function FrozenBanner({ reason, by, at }: { reason: string; by: string; at: string }) {
+  return (
+    <div role="alert" className="border-b border-rose-600/40 bg-rose-600/15 px-4 py-2.5 text-[13px] text-rose-900 dark:text-rose-100">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 sm:px-6">
+        <span className="font-mono font-semibold uppercase">Workspace frozen</span>
+        <span aria-hidden>·</span>
+        <span>
+          {reason} — by <span className="font-mono">{by}</span> at{' '}
+          <span className="font-mono">{new Date(at).toLocaleString()}</span>. Every act, gate and hook is blocked until an admin
+          calls <span className="font-mono">POST /api/admin/unfreeze</span>.
+        </span>
+      </div>
     </div>
   )
 }

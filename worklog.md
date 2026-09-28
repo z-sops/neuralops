@@ -254,3 +254,12 @@ Work Log:
 
 Verification: 122 tests pass; backend + frontend tsc and lint clean; browser via real Caddy: new scenarios + golden path 10/10.
 - Follow-up: Codex CLI (PreToolUse: Bash, apply_patch) and Gemini CLI (BeforeTool: write_file, replace, run_shell_command) now have hooks upstream; the pre-tool hook was generalized to all three CLIs (src/hooks/pretooluse.ts + per-CLI entry points, integrations/codex, integrations/gemini). 127 tests pass.
+
+## 2026-09-28 — V0.1.4 Nexus Gate
+- `perform` act (26th): gate + log a tool call before it runs (authority / ungoverned / single-use approval / new approval with detail)
+- Streamable-HTTP MCP at `POST /mcp` (stateless, per-agent bearer token; optional `/mcp/<token>` via NEURALOPS_MCP_URL_TOKENS=1)
+- Kill switch: admin freeze/unfreeze, journaled + replayed; blocks acts, gates, hooks, pre-commit; dashboard banner
+- `integrations/nexus/`: Python guard (pydantic-ai `process_tool_call`, decorator), setup guide, Python tests
+- Approval `detail` flagged as untrusted in the approver's inbox
+- Apache-2.0 LICENSE; docs/PITCH.md rewritten as the Nexus proposal; doc 20
+- 140 tests pass; tsc + lint clean

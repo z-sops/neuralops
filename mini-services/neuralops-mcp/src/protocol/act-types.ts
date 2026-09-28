@@ -1,8 +1,9 @@
 // NeuralOps Coordination Protocol — Act Types
 // Acts mutate state; messages do not become the state.
 //
-// 25 act types in 6 families. V0.1.1 added `create_task`; V0.1.3 adds
-// `reserve_files` / `release_files` (file reservations).
+// 26 act types in 6 families. V0.1.1 added `create_task`; V0.1.3 added
+// `reserve_files` / `release_files` (file reservations); V0.1.4 adds `perform`
+// (a gated action such as an MCP tool call, checked and logged before it runs).
 
 export type ActFamily =
   | 'task'
@@ -35,6 +36,7 @@ export const ACT_FAMILY = {
   authorize: 'authority',
   deny: 'authority',
   escalate: 'authority',
+  perform: 'authority',
   subscribe: 'lifecycle',
   unsubscribe: 'lifecycle',
   ack: 'lifecycle',
@@ -94,6 +96,8 @@ export const ACT_DESCRIPTION: Record<ActType, string> = {
   request_approval: 'Explicitly request approval for a gated action/scope. The approver comes from workspace policy, falling back to your manager.',
   authorize: 'Approve a pending approval. Allowed for the named approver, anyone above them in the reporting chain, or a wildcard authority — never for the requester.',
   deny: 'Deny a pending approval. Allowed for approvers (as above) and agents holding veto authority (`deny` on that scope).',
+  perform:
+    'Ask to perform a gated action BEFORE doing it (e.g. an MCP tool call that writes to a real system: action "odoo.write", scope "production"). Allowed at once with direct authority or when no policy governs the action; otherwise it consumes an approved single-use approval, or creates one and returns allowed=false. Every call is logged. Do not run the action unless the result says allowed=true.',
   escalate: 'Escalate a task to another agent. The task becomes blocked and the target may take it over by claiming it.',
   subscribe: 'Subscribe to a task, `workspace`, or `role:<name>`.',
   unsubscribe: 'Unsubscribe from a task, `workspace`, or `role:<name>`.',

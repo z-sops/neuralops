@@ -540,6 +540,9 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
                           </span>
                         )}
                       </div>
+                      {a.detail && (
+                        <p className="mt-1 break-all font-mono text-[11px] text-foreground/80">{a.detail}</p>
+                      )}
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                         <span>
                           requestedBy:{' '}

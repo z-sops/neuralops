@@ -33,6 +33,11 @@ export function gateStatus(taskId: string, action: string, scope: string): GateS
   const evidence = store.evidenceForTask(taskId).map((e) => ({ type: e.type, verified: e.verified }))
   const base = { taskId, action, scope, taskStatus: task.status, evidence, approvalId: null as string | null }
 
+  if (store.freeze) {
+    const f = store.freeze
+    return { ...base, allowed: false, reason: `Workspace is FROZEN (incident mode) by ${f.by} since ${f.at}: ${f.reason}.` }
+  }
+
   const gates = task.gates.filter((g) => (g.action === action || g.action === '*') && g.scope === scope)
   for (const g of gates) {
     for (const type of g.requireVerified ?? []) {

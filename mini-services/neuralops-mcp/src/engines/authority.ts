@@ -123,6 +123,7 @@ export function createApproval(args: {
   taskId: string | null
   references: string[]
   at: string
+  detail?: string
 }): Approval {
   const approver = resolveApprover(args.requestedBy, args.action, args.scope)
   if (!approver) {
@@ -146,6 +147,7 @@ export function createApproval(args: {
     timestamp: args.at,
     consumedAt: null,
     consumedBy: null,
+    ...(args.detail ? { detail: args.detail } : {}),
   }
   store.approvals.set(approval.id, approval)
   return approval
