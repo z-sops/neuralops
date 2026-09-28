@@ -28,7 +28,7 @@ export type ActInput = z.input<typeof ActSchema>
 export type ActEnvelope = z.output<typeof ActSchema>
 
 // How the caller's identity was established. Recorded on every act + ledger event.
-export type ActVia = 'token' | 'impersonated' | 'system'
+export type ActVia = 'token' | 'impersonated' | 'system' | 'link' | 'delegated'
 
 export interface Act extends ActEnvelope {
   id: string

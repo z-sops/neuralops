@@ -45,7 +45,7 @@ describe('golden path', () => {
 })
 
 describe('every act type is implemented', () => {
-  test('all 26 act types succeed in one scenario', () => {
+  test('all 28 act types succeed in one scenario', () => {
     const seen = new Set<ActType>()
     const run = (from: string, type: ActType, payload: Record<string, unknown>) => {
       const r = ok(act(from, type, payload))
@@ -76,6 +76,8 @@ describe('every act type is implemented', () => {
     const ra2 = ok(act('agent.qa', 'request_approval', { action: 'deploy', scope: 'production' }))
     run('agent.architect', 'authorize', { approvalId: ra2.approval!.id })
     run('agent.qa', 'perform', { action: 'deploy', scope: 'production', target: 'vercel' })
+    run('agent.architect', 'grant_approval', { to: 'agent.qa', action: 'deploy', scope: 'staging', uses: 3, reason: 'nightly job' })
+    run('agent.qa', 'report_block', { enforcer: 'claude-code', tool: 'Edit', reason: 'file reserved', target: 'src/a.ts' })
     run('agent.security', 'escalate', { taskId: 'task_x', reason: 'need arch call', to: 'agent.architect' })
     run('agent.architect', 'claim', { taskId: 'task_x' }) // escalation target takes over
     run('agent.architect', 'release', { taskId: 'task_x', reason: 'back to the pool' })

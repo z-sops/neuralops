@@ -9,14 +9,17 @@
 import { z } from 'zod'
 import { invalid, notFound } from '../errors.js'
 import { formatZodError } from '../protocol/payloads.js'
-import type { Policy } from '../state/types.js'
-import { setPolicy } from './admin.js'
+import type { CustomPreset, Policy } from '../state/types.js'
+import { store } from '../state/store.js'
+import { applyAdmin, setPolicy } from './admin.js'
+import { conflict } from '../errors.js'
 
 export interface Preset {
   name: string
   title: string
   description: string
   policies: { action: string; scope: string }[]
+  custom?: boolean
 }
 
 export const PRESETS: Preset[] = [
@@ -65,10 +68,38 @@ export const PRESETS: Preset[] = [
   },
 ]
 
+/** Built-in presets, then the workspace's own. */
+export function allPresets(): Preset[] {
+  return [...PRESETS, ...[...store.presets.values()].map((p) => ({ ...p, custom: true }))]
+}
+
 export function getPreset(name: string): Preset {
-  const p = PRESETS.find((x) => x.name === name)
-  if (!p) throw notFound(`No preset "${name}". Presets: ${PRESETS.map((x) => x.name).join(', ')}`)
+  const p = allPresets().find((x) => x.name === name)
+  if (!p) throw notFound(`No preset "${name}". Presets: ${allPresets().map((x) => x.name).join(', ')}`)
   return p
+}
+
+const PresetInput = z.object({
+  name: z.string().regex(/^[a-z0-9][a-z0-9-]{1,39}$/, 'lowercase name with dashes, e.g. "finance-team"'),
+  title: z.string().min(1).max(80).optional(),
+  description: z.string().max(500).optional(),
+  policies: z.array(z.object({ action: z.string().min(1).max(64), scope: z.string().min(1).max(64) })).min(1).max(50),
+})
+
+/** Define (or update) a workspace preset. Admin; journaled and replayed. */
+export function definePreset(raw: unknown, by: string, at = new Date().toISOString()): Preset {
+  const r = PresetInput.safeParse(raw ?? {})
+  if (!r.success) throw invalid(`Invalid preset — ${formatZodError(r.error)}`)
+  if (PRESETS.some((p) => p.name === r.data.name)) throw conflict(`"${r.data.name}" is a built-in preset; choose another name`)
+  const preset: CustomPreset = { name: r.data.name, title: r.data.title ?? r.data.name, description: r.data.description ?? '', policies: r.data.policies }
+  applyAdmin({ k: 'preset_set', preset, by, at })
+  return { ...preset, custom: true }
+}
+
+export function deletePreset(name: string, by: string, at = new Date().toISOString()): void {
+  if (PRESETS.some((p) => p.name === name)) throw conflict(`"${name}" is a built-in preset and cannot be deleted`)
+  if (!store.presets.has(name)) throw notFound(`No custom preset "${name}"`)
+  applyAdmin({ k: 'preset_delete', name, by, at })
 }
 
 const ApplyInput = z.object({

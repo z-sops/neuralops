@@ -61,7 +61,11 @@ export interface Agent {
   /** Set when an admin revokes the agent; revoked agents cannot act until re-issued a token. */
   revokedAt?: string | null
   /** "audit" = read-only identity (e.g. a client's auditor): may read the ledger and integrity, never act. Default "act". */
-  access?: 'act' | 'audit'
+  access?: 'act' | 'audit' | 'broker'
+  /** A broker identity (e.g. the Nexus worker) that may act on this identity's behalf (via "delegated"). */
+  delegate?: string
+  /** The person's id in an external sign-in system (JWT `sub`), for JWT identities. */
+  externalId?: string
 }
 
 export type TaskStatus =
@@ -177,6 +181,12 @@ export interface Approval {
   consumedBy: string | null // act id
   /** What exactly is being approved (e.g. the tool call and its arguments), shown to the approver. */
   detail?: string
+  /** Multi-use approval: how many more acts it may unlock (absent = single use). */
+  usesLeft?: number
+  /** Time-boxed approval: not usable after this instant. */
+  validUntil?: string | null
+  /** Acts that used this approval (multi-use). */
+  usedBy?: string[]
 }
 
 export type ExchangeStatus = 'open' | 'answered' | 'countered' | 'expired'
@@ -254,6 +264,16 @@ export type AdminRecord =
   | { k: 'token'; agentId: string; tokenHash: string; expiresAt: string | null; replaceExisting: boolean; by: string; at: string }
   | { k: 'revoke'; agentId: string; by: string; at: string }
   | { k: 'freeze'; frozen: boolean; reason: string; by: string; at: string }
+  | { k: 'preset_set'; preset: CustomPreset; by: string; at: string }
+  | { k: 'preset_delete'; name: string; by: string; at: string }
+
+/** A workspace-defined policy preset (built-in presets live in engines/presets.ts). */
+export interface CustomPreset {
+  name: string
+  title: string
+  description: string
+  policies: { action: string; scope: string }[]
+}
 
 /** Kill switch state (incident mode). */
 export interface FreezeState {

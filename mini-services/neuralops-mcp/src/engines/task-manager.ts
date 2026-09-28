@@ -40,6 +40,8 @@ import {
   hasWildcard,
   isAbove,
   policyFor,
+  resolveApprover,
+  canDecide,
 } from './authority.js'
 
 export interface ActResult {
@@ -53,6 +55,8 @@ export interface ActResult {
   reservation?: Reservation
   /** perform: may the action run now? */
   allowed?: boolean
+  /** perform: why it may run — "authority" | "ungoverned" | "approval" */
+  via?: string
   error?: string
   errorCode?: ErrorCode
 }
@@ -269,6 +273,9 @@ export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult
     if (actor.access === 'audit') {
       throw forbidden(`${act.from} is a read-only audit identity and cannot act.`)
     }
+    if (actor.access === 'broker') {
+      throw forbidden(`${act.from} is a broker: it acts only on behalf of its delegates (send X-Agent-Id).`)
+    }
     if (store.freeze) {
       const f = store.freeze
       throw forbidden(`Workspace is FROZEN (incident mode) since ${f.at} by ${f.by}: ${f.reason}. No acts are accepted until an admin unfreezes it.`)
@@ -476,7 +483,7 @@ const handleComplete: Handler<'complete'> = (act, p) => {
       clearances.push({ action: 'complete', scope, via: 'authority', approvalId: null, by: act.from, actId: act.id, at: act.timestamp })
       continue
     }
-    const granted = findConsumableApproval(act.from, 'complete', scope, task.id)
+    const granted = findConsumableApproval(act.from, 'complete', scope, task.id, act.timestamp)
     if (granted) {
       toConsume.push(granted)
       clearances.push({ action: 'complete', scope, via: 'approval', approvalId: granted.id, by: act.from, actId: act.id, at: act.timestamp })
@@ -952,9 +959,9 @@ const handleRequestApproval: Handler<'request_approval'> = (act, p) => {
 }
 
 const handleAuthorize: Handler<'authorize'> = (act, p) => {
-  const approval = authorizeApproval(p.approvalId, act.from, act.timestamp, p.reason)
+  const approval = authorizeApproval(p.approvalId, act.from, act.timestamp, p.reason, { uses: p.uses, validForSeconds: p.validForSeconds })
   const task = approval.taskId ? store.tasks.get(approval.taskId) ?? null : null
-  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'approved', decidedBy: act.from, ...(p.reason ? { reason: p.reason } : {}) }, `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope} for ${approval.requestedBy})${p.reason ? `: ${p.reason}` : ''}`, [approval.id])
+  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'approved', decidedBy: act.from, ...(p.reason ? { reason: p.reason } : {}), ...(approval.usesLeft ? { uses: approval.usesLeft } : {}), ...(approval.validUntil ? { validUntil: approval.validUntil } : {}) }, `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope} for ${approval.requestedBy})${p.reason ? `: ${p.reason}` : ''}`, [approval.id])
   return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 
@@ -972,7 +979,7 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   const detail = [p.target, p.detail].filter(Boolean).join(': ') || undefined
   const done = (via: string, extra: Record<string, unknown>, summary: string, refs: string[] = []): HandlerOut => {
     const evt = record(act, task, {}, { performed: true, action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, summary, refs)
-    return { ledgerEvent: evt, approval: null, stateChanged: true, allowed: true, message: `Allowed: ${what} (${via}). Go ahead.` }
+    return { ledgerEvent: evt, approval: null, stateChanged: true, allowed: true, via, message: `Allowed: ${what} (${via}). Go ahead.` }
   }
 
   if (hasAuthority(act.from, p.action, p.scope)) {
@@ -982,7 +989,7 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   if (!policy) {
     return done('ungoverned', {}, `${act.from} performed ${what} (no policy governs it)`)
   }
-  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId)
+  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId, act.timestamp)
   if (granted) {
     consumeApproval(granted, act.id, act.timestamp)
     const out = done('approval', { approvalId: granted.id }, `${act.from} performed ${what} with ${granted.id} (approved by ${granted.decidedBy})`, [granted.id])
@@ -1015,6 +1022,43 @@ const handlePerform: Handler<'perform'> = (act, p) => {
     allowed: false,
     message: `Not allowed yet: ${what} needs approval ${approval.id} from ${approval.approver} (policy ${policy.id}). Do not run it; retry after it is authorized.`,
   }
+}
+
+const handleGrantApproval: Handler<'grant_approval'> = (act, p) => {
+  const taskId = p.taskId ?? null
+  const task = taskId ? requireTask(taskId) : null
+  requireAgent(p.to, 'Grantee')
+  if (p.to === act.from) throw forbidden(`${act.from} cannot grant an approval to itself.`)
+  const approver = resolveApprover(p.to, p.action, p.scope)
+  if (!approver) throw forbidden(`No approver for ${p.action}/${p.scope}: no workspace policy and ${p.to} has no manager.`)
+  const probe = { requestedBy: p.to, approver } as Approval
+  if (!canDecide(act.from, probe)) {
+    throw forbidden(`${act.from} cannot grant ${p.action}/${p.scope} to ${p.to}: the approver is ${approver} (or someone above them).`)
+  }
+  const approval = createApproval({ requestedBy: p.to, action: p.action, scope: p.scope, taskId, references: act.references, at: act.timestamp, detail: `standing approval granted by ${act.from}` })
+  authorizeApproval(approval.id, act.from, act.timestamp, p.reason, { uses: p.uses, validForSeconds: p.validForSeconds })
+  if (p.uses === 1) delete approval.usesLeft
+  const evt = record(
+    act,
+    task,
+    {},
+    { approvalId: approval.id, approvalStatus: 'approved', to: p.to, action: p.action, scope: p.scope, uses: p.uses, validUntil: approval.validUntil, reason: p.reason },
+    `${act.from} GRANTED ${p.to} ${p.action}/${p.scope} ×${p.uses} until ${approval.validUntil} (${approval.id}): ${p.reason}`,
+    [approval.id]
+  )
+  return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
+}
+
+const handleReportBlock: Handler<'report_block'> = (act, p) => {
+  const task = p.taskId ? store.tasks.get(p.taskId) ?? null : null
+  const evt = record(
+    act,
+    task,
+    {},
+    { blocked: true, enforcer: p.enforcer, tool: p.tool, target: p.target ?? null, reason: p.reason },
+    `${p.enforcer} BLOCKED ${act.from}: ${p.tool}${p.target ? ` (${p.target})` : ''} — ${p.reason}`
+  )
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
 const handleEscalate: Handler<'escalate'> = (act, p) => {
@@ -1103,6 +1147,8 @@ const HANDLERS: { [K in ActType]: Handler<K> } = {
   deny: handleDeny,
   escalate: handleEscalate,
   perform: handlePerform,
+  grant_approval: handleGrantApproval,
+  report_block: handleReportBlock,
   subscribe: handleSubscribe,
   unsubscribe: handleUnsubscribe,
   ack: handleAck,

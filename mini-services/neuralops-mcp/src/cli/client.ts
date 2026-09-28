@@ -47,6 +47,27 @@ export async function call<T = unknown>(
   return { status: res.status, data: data as T }
 }
 
+/**
+ * Record in the ledger that an enforcer stopped this agent. Best effort and
+ * quick: a hook must never hang or fail because the report could not be sent.
+ */
+export async function reportBlock(payload: {
+  enforcer: 'claude-code' | 'codex' | 'gemini' | 'git-pre-commit' | 'guard' | 'ci' | 'other'
+  tool: string
+  reason: string
+  target?: string
+}): Promise<void> {
+  if (process.env.NEURALOPS_REPORT_BLOCKS === '0') return
+  try {
+    await call('POST', '/api/acts', {
+      type: 'report_block',
+      payload: { ...payload, tool: payload.tool.slice(0, 100), reason: payload.reason.slice(0, 1000), ...(payload.target ? { target: payload.target.slice(0, 500) } : {}) },
+    }, 1500)
+  } catch {
+    /* the block stands whether or not it was recorded */
+  }
+}
+
 // Task ids never contain hyphens, so a branch like task_42-auth-module yields task_42.
 export const TASK_ID_RE = /\btask_[A-Za-z0-9_]+/
 

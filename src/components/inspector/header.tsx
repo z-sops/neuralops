@@ -39,7 +39,7 @@ export function Header({ connection, onReset, resetting }: HeaderProps) {
                 variant="outline"
                 className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase text-emerald-700 dark:text-emerald-300"
               >
-                V0.1.5
+                V0.1.6
               </Badge>
             </div>
             <p className="text-[11px] text-muted-foreground sm:text-xs">
@@ -158,7 +158,7 @@ export function Footer({ connection }: { connection: ConnectionState }) {
         <div className="flex items-center gap-2 font-mono text-muted-foreground">
           <span className="font-semibold text-foreground">NeuralOps MCP</span>
           <span aria-hidden>—</span>
-          <span>AI Workforce Coordination Protocol (V0.1.5)</span>
+          <span>AI Workforce Coordination Protocol (V0.1.6)</span>
         </div>
         <div className="flex items-center gap-3 font-mono text-muted-foreground">
           <span className="inline-flex items-center gap-1.5">

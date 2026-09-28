@@ -141,6 +141,8 @@ export interface Approval {
   consumedBy?: string | null
   /** What exactly is being approved (e.g. a tool call and its arguments). */
   detail?: string
+  usesLeft?: number
+  validUntil?: string | null
 }
 
 /** Kill switch: while set, every act is rejected and every gate says no. */
@@ -165,8 +167,8 @@ export type ActType =
   | 'handoff' | 'accept_handoff' | 'reject_handoff'
   | 'evidence' | 'decision' | 'update'
   | 'question' | 'answer' | 'proposal' | 'counter'
-  | 'request_approval' | 'authorize' | 'deny' | 'escalate' | 'perform'
-  | 'subscribe' | 'unsubscribe' | 'ack'
+  | 'request_approval' | 'authorize' | 'deny' | 'escalate' | 'perform' | 'grant_approval'
+  | 'subscribe' | 'report_block' | 'unsubscribe' | 'ack'
 
 export interface LedgerEvent {
   id: string
@@ -175,7 +177,7 @@ export interface LedgerEvent {
   actId: string
   actType: ActType | 'admin'
   actor: string
-  via?: 'token' | 'impersonated' | 'system'
+  via?: 'token' | 'impersonated' | 'system' | 'link' | 'delegated'
   taskId: string | null
   intent: string | null
   before: Record<string, unknown>
@@ -265,6 +267,6 @@ export const ACT_FAMILY_STATIC: Record<ActType, ActFamily> = {
   handoff: 'handoff', accept_handoff: 'handoff', reject_handoff: 'handoff',
   evidence: 'information', decision: 'information', update: 'information',
   question: 'conversation', answer: 'conversation', proposal: 'conversation', counter: 'conversation',
-  request_approval: 'authority', authorize: 'authority', deny: 'authority', escalate: 'authority', perform: 'authority',
-  subscribe: 'lifecycle', unsubscribe: 'lifecycle', ack: 'lifecycle',
+  request_approval: 'authority', authorize: 'authority', deny: 'authority', escalate: 'authority', perform: 'authority', grant_approval: 'authority',
+  subscribe: 'lifecycle', unsubscribe: 'lifecycle', ack: 'lifecycle', report_block: 'lifecycle',
 }

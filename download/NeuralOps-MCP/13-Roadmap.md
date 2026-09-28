@@ -51,12 +51,20 @@
 ✅ Policy presets (nexus-default, solo-dev, two-agent-team, production-gated, lockdown)
 ✅ Approval / freeze webhook (HMAC-signed)
 
+## V0.1.6 — Gaps closed (DONE)
+
+✅ Nexus patch on Nexus' own ToolApprovalGate (broker identity, personas auto-created)
+✅ Multi-use, time-boxed and standing approvals
+✅ One-click signed approval links; webhook with several receivers, retries, delivery log
+✅ Supabase / JWKS sign-in; human.<name> ids; read scopes; custom presets
+✅ Hook blocks recorded (`report_block`)
+
 ## After the first Nexus trial
 
-- [ ] Hook blocks recorded in the ledger + `feedback` act (was the block right or in the way?)
-- [ ] Trust-metrics page (blocks/week, right vs in the way, approval latency, evidence coverage)
+- [ ] "Waiting for approval" card in the Nexus topic
+- [ ] `feedback` act (was the block right or in the way?) + trust-metrics page
 - [ ] Policy simulator (would this policy have blocked last week's acts?)
-- [ ] Budget gate (LiteLLM cost → approval when a budget runs out)
+- ~~Budget gate~~ — Nexus already has spend limits
 
 ## V0.2 — Real Agent Integration (next)
 

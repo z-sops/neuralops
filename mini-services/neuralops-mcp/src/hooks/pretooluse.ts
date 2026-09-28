@@ -29,7 +29,7 @@
 
 import { isAbsolute, relative, resolve } from 'node:path'
 import { execSync } from 'node:child_process'
-import { call, currentBranch, findTaskId } from '../cli/client.js'
+import { call, currentBranch, findTaskId, reportBlock } from '../cli/client.js'
 
 interface HookInput {
   tool_name?: string
@@ -74,9 +74,19 @@ const PUSH_RE = /\bgit\s+push\b/
 const MAIN_RE = /\b(main|master)\b/
 const scope = process.env.NEURALOPS_SCOPE || 'production'
 
+class Blocked extends Error {}
+
+/** Stop the tool call. main() records it in the ledger, prints the reason and exits 2. */
 function block(msg: string): never {
-  process.stderr.write(`NeuralOps hook blocked this: ${msg}\n`)
-  process.exit(2)
+  throw new Blocked(msg)
+}
+
+function enforcerFor(tool: string): 'claude-code' | 'codex' | 'gemini' | 'other' {
+  const override = process.env.NEURALOPS_ENFORCER
+  if (override === 'claude-code' || override === 'codex' || override === 'gemini') return override
+  if (tool === 'apply_patch') return 'codex'
+  if (tool === 'write_file' || tool === 'replace' || tool === 'run_shell_command') return 'gemini'
+  return 'claude-code'
 }
 
 async function readStdin(): Promise<string> {
@@ -116,6 +126,7 @@ async function main(): Promise<void> {
   const isShell = SHELL_TOOLS.has(tool)
   const command = isShell ? str(toolInput.command) : ''
 
+  current = { tool, target: isShell ? command.slice(0, 500) : editedFiles(tool, toolInput).join(', ').slice(0, 500) }
   const isEdit = EDIT_TOOLS.has(tool)
   const isDeploy = isShell && DEPLOY_RE.test(command)
   const isPush = isShell && PUSH_RE.test(command)
@@ -161,6 +172,7 @@ async function main(): Promise<void> {
       }
     }
   } catch (e) {
+    if (e instanceof Blocked) throw e
     const msg = `NeuralOps core unreachable at ${process.env.NEURALOPS_URL || 'http://127.0.0.1:3031'} (${(e as Error).message})`
     if (isEdit && process.env.NEURALOPS_HOOK_STRICT !== '1') {
       process.stderr.write(`${msg} — edit allowed (set NEURALOPS_HOOK_STRICT=1 to block).\n`)
@@ -170,4 +182,15 @@ async function main(): Promise<void> {
   }
 }
 
-await main()
+let current: { tool: string; target: string } = { tool: '', target: '' }
+
+try {
+  await main()
+} catch (e) {
+  if (!(e instanceof Blocked)) throw e
+  process.stderr.write(`NeuralOps hook blocked this: ${e.message}\n`)
+  if (!/core unreachable/.test(e.message)) {
+    await reportBlock({ enforcer: enforcerFor(current.tool), tool: current.tool || 'unknown', reason: e.message, target: current.target || undefined })
+  }
+  process.exit(2)
+}

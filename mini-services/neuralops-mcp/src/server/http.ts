@@ -17,7 +17,10 @@ import { approverFor } from '../engines/authority.js'
 import { demoToken, registerAgent } from '../engines/agents.js'
 import { deletePolicy, freezeWorkspace, revokeAgent, rotateToken, setAuthority, setPolicy, unfreezeWorkspace } from '../engines/admin.js'
 import { handleMcpRequest } from '../mcp/http.js'
-import { PRESETS, applyPreset, getPreset } from '../engines/presets.js'
+import { canSeeApproval, requireTaskVisible, view } from '../engines/visibility.js'
+import { allPresets, applyPreset, definePreset, deletePreset, getPreset } from '../engines/presets.js'
+import { approvalLinks, decideApproval, showApproval } from './links.js'
+import { webhookDeliveries } from './webhook.js'
 import { gateStatus } from '../engines/gate.js'
 import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { genesis, verifyIntegrity, type JournalFile } from '../engines/replay.js'
@@ -65,18 +68,20 @@ function readJson(req: IncomingMessage): Promise<unknown> {
   })
 }
 
-export function snapshotState(config?: Pick<Config, 'mode'>) {
+export function snapshotState(config?: Pick<Config, 'mode'>, caller?: Caller) {
+  const c = caller ?? { agentId: null }
+  const ledger = view.events(c, store.ledger)
   return {
     mode: config?.mode ?? 'demo',
     workspace: [...store.workspaces.values()][0] ?? null,
     agents: [...store.agents.values()].map((a) => ({ ...a, approverFor: approverFor(a.id) })),
-    tasks: [...store.tasks.values()],
-    approvals: [...store.approvals.values()],
+    tasks: view.tasks(c, [...store.tasks.values()]),
+    approvals: view.approvals(c, [...store.approvals.values()]),
     policies: [...store.policies.values()],
     reservations: activeReservations(),
     freeze: store.freeze,
-    ledger: store.ledger.slice(-50).reverse(),
-    ledgerTotal: store.ledger.length,
+    ledger: ledger.slice(-50).reverse(),
+    ledgerTotal: ledger.length,
     ledgerHead: store.ledgerHead,
   }
 }
@@ -162,6 +167,15 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         }
       }
 
+      // ---- one-click approval links (the link itself is the credential) ----
+      const al = path.match(/^\/approve\/([A-Za-z0-9_]+)$/)
+      if (al) {
+        if (!config.links) throw notFound('Approval links are off (set NEURALOPS_PUBLIC_URL and NEURALOPS_LINK_SECRET)')
+        if (method === 'GET') return showApproval(config.links, res, al[1], url.searchParams.get('exp'), url.searchParams.get('sig'))
+        if (method === 'POST') return await decideApproval(config.links, req, res, al[1])
+        return send(res, 405, { ok: false, error: 'Method not allowed' })
+      }
+
       // ---- MCP over streamable HTTP (NeuralOps Nexus, remote MCP hosts) ----
       const mcpPath = path === '/mcp' ? { token: null as string | null } : path.match(/^\/mcp\/([A-Za-z0-9_\-.]+)$/) ? { token: path.slice(5) } : null
       if (mcpPath) {
@@ -177,10 +191,31 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         const caller = callerFor(req, header(req, 'x-agent-id'))
         const q = (k: string) => url.searchParams.get(k)
 
-        if (path === '/api/state') return send(res, 200, snapshotState(config))
+        const seeTask = (id: string | null | undefined) => {
+          if (caller.scoped && caller.agentId && id) requireTaskVisible(caller.agentId, id)
+        }
+        if (path === '/api/state') return send(res, 200, snapshotState(config, caller))
         if (path === '/api/agents') return send(res, 200, snapshotState(config).agents)
-        if (path === '/api/tasks') return send(res, 200, [...store.tasks.values()])
-        if (path === '/api/approvals') return send(res, 200, [...store.approvals.values()])
+        if (path === '/api/tasks') return send(res, 200, view.tasks(caller, [...store.tasks.values()]))
+        if (path === '/api/approvals') return send(res, 200, view.approvals(caller, [...store.approvals.values()]))
+        const apl = path.match(/^\/api\/approvals\/([A-Za-z0-9_]+)\/links$/)
+        if (apl) {
+          requireAdmin(caller)
+          if (!config.links) throw notFound('Approval links are off (set NEURALOPS_PUBLIC_URL and NEURALOPS_LINK_SECRET)')
+          const a = store.approvals.get(apl[1])
+          if (!a) throw notFound(`Approval ${apl[1]} not found`)
+          return send(res, 200, approvalLinks(config.links, a))
+        }
+        if (path === '/api/webhooks/deliveries') {
+          requireAdmin(caller)
+          return send(res, 200, webhookDeliveries())
+        }
+        const apm = path.match(/^\/api\/approvals\/([A-Za-z0-9_]+)$/)
+        if (apm) {
+          const a = store.approvals.get(apm[1])
+          if (!a || (caller.scoped && caller.agentId && !canSeeApproval(caller.agentId, a))) throw notFound(`Approval ${apm[1]} not found`)
+          return send(res, 200, a)
+        }
         if (path === '/api/policies') return send(res, 200, [...store.policies.values()])
         if (path === '/api/tools') return send(res, 200, TOOL_DEFS)
         if (path === '/api/families') {
@@ -189,10 +224,11 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         if (path === '/api/ledger') {
           const limit = Math.min(Math.max(parseInt(q('limit') || '100', 10) || 100, 1), 1000)
           const taskId = q('taskId')
-          const events = taskId ? store.ledgerForTask(taskId) : store.ledger
+          seeTask(taskId)
+          const events = view.events(caller, taskId ? store.ledgerForTask(taskId) : store.ledger)
           return send(res, 200, events.slice(-limit).reverse())
         }
-        if (path === '/api/presets') return send(res, 200, PRESETS)
+        if (path === '/api/presets') return send(res, 200, allPresets())
         const pm = path.match(/^\/api\/presets\/([a-z0-9-]+)$/)
         if (pm) return send(res, 200, getPreset(pm[1]))
         if (path === '/api/freeze') return send(res, 200, { frozen: !!store.freeze, freeze: store.freeze })
@@ -225,13 +261,23 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           if (!caller.agentId) throw forbidden('Inbox needs an agent identity')
           return send(res, 200, { ...getInbox(caller.agentId), frozen: store.freeze })
         }
-        if (path === '/api/evidence' && q('id')) return send(res, 200, getEvidenceById(q('id')!))
-        if (path === '/api/decisions' && q('id')) return send(res, 200, getDecisionById(q('id')!))
+        if (path === '/api/evidence' && q('id')) {
+          const ev = getEvidenceById(q('id')!)
+          seeTask(ev.taskId)
+          return send(res, 200, ev)
+        }
+        if (path === '/api/decisions' && q('id')) {
+          const d = getDecisionById(q('id')!)
+          seeTask(d.taskId)
+          return send(res, 200, d)
+        }
         if (path === '/api/demo/tokens') {
           requireDemo(caller)
           return send(res, 200, Object.fromEntries([...store.agents.keys()].map((id) => [id, demoToken(id)])))
         }
 
+        const tm = path.match(/^\/api\/tasks\/([^/]+)/)
+        if (tm) seeTask(decodeURIComponent(tm[1]))
         let m = path.match(/^\/api\/tasks\/([^/]+)\/context\/comparison$/)
         if (m) return send(res, 200, getContextComparison(decodeURIComponent(m[1])))
         m = path.match(/^\/api\/tasks\/([^/]+)\/context\/full$/)
@@ -284,8 +330,9 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
 
         if (path === '/api/agents') {
           const caller = callerFor(req, null)
-          requireAdmin(caller)
-          const { agent, token, expiresAt } = registerAgent(body, { asAdmin: canAdminister(config, caller) })
+          const broker = !caller.isAdmin && caller.via === 'token' && caller.agentId && store.agents.get(caller.agentId)?.access === 'broker' ? caller.agentId : null
+          if (!broker) requireAdmin(caller)
+          const { agent, token, expiresAt } = registerAgent(body, broker ? { asAdmin: false, broker } : { asAdmin: canAdminister(config, caller) })
           return send(res, 201, { ok: true, agent, token, expiresAt })
         }
 
@@ -300,6 +347,12 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const caller = callerFor(req, null)
           requireAdmin(caller)
           return send(res, 200, { ok: true, ...applyPreset(pa[1], body, actorOf(caller)) })
+        }
+
+        if (path === '/api/presets') {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          return send(res, 201, { ok: true, preset: definePreset(body, actorOf(caller)) })
         }
 
         if (path === '/api/admin/freeze') {
@@ -357,6 +410,13 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
       }
 
       if (method === 'DELETE') {
+        const dp = path.match(/^\/api\/presets\/([a-z0-9-]+)$/)
+        if (dp) {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          deletePreset(dp[1], actorOf(caller))
+          return send(res, 200, { ok: true })
+        }
         const m = path.match(/^\/api\/policies\/([^/]+)$/)
         if (m) {
           const caller = callerFor(req, null)

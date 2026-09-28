@@ -13,7 +13,7 @@
 // (gate-check) is what makes that visible and non-final.
 
 import { execSync } from 'node:child_process'
-import { BASE, TOKEN, call } from '../cli/client.js'
+import { BASE, TOKEN, call, reportBlock } from '../cli/client.js'
 
 interface Check {
   path: string
@@ -39,7 +39,7 @@ async function main(): Promise<number> {
     if (status !== 200 || !data.results) throw new Error(data.error ?? `HTTP ${status}`)
     if (data.frozen) {
       console.error(`NeuralOps pre-commit: BLOCKED — the workspace is FROZEN (incident mode) by ${data.frozen.by}: ${data.frozen.reason}`)
-      return 1
+      return 1 // not reported: a frozen workspace accepts no acts
     }
     results = data.results
   } catch (e) {
@@ -59,6 +59,12 @@ async function main(): Promise<number> {
     console.error(`  ${r.path}  ← ${h.agentId} [${h.reservationId}${h.taskId ? `, ${h.taskId}` : ''}] until ${h.expiresAt}`)
   }
   console.error('Unstage them (git restore --staged <file>), ask the holder to release, or wait for the reservation to expire.')
+  await reportBlock({
+    enforcer: 'git-pre-commit',
+    tool: 'git commit',
+    reason: `staged files reserved by another agent: ${blocked.map((r) => `${r.path} ← ${(r.heldBy.find((x) => x.exclusive) ?? r.heldBy[0]).agentId}`).join('; ')}`,
+    target: blocked.map((r) => r.path).join(', '),
+  })
   return 1
 }
 

@@ -178,7 +178,7 @@ describe('secure mode: freeze API and /mcp', () => {
   test('a persona connects over streamable HTTP with its own token and acts as itself', async () => {
     const c = await mcpClient(`${base}/mcp`, layla)
     const { tools } = await c.listTools()
-    expect(tools).toHaveLength(39)
+    expect(tools).toHaveLength(42)
     expect(tools.map((t) => t.name)).toContain('neuralops_perform')
     expect(json(await c.callTool({ name: 'neuralops_whoami', arguments: {} })).agent.id).toBe('agent.layla')
 

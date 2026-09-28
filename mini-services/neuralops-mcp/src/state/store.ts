@@ -16,6 +16,7 @@ import type {
   LedgerEvent,
   TokenInfo,
   FreezeState,
+  CustomPreset,
   Policy,
   Proposal,
   Question,
@@ -66,6 +67,7 @@ interface StoreData {
   tokenHashes: Map<string, TokenInfo> // sha256(token) → agent + expiry
   /** Kill switch: while set, every act is rejected and every gate answers "not allowed". */
   freeze: FreezeState | null
+  presets: Map<string, CustomPreset>
   ledger: LedgerEvent[]
   acts: Map<string, Act>
   counters: Record<string, number>
@@ -87,6 +89,7 @@ function emptyData(): StoreData {
     reservations: new Map(),
     tokenHashes: new Map(),
     freeze: null,
+    presets: new Map(),
     ledger: [],
     acts: new Map(),
     counters: {},
@@ -115,6 +118,7 @@ export class Store {
   get reservations() { return this.d.reservations }
   get tokenHashes() { return this.d.tokenHashes }
   get freeze(): FreezeState | null { return this.d.freeze }
+  get presets() { return this.d.presets }
   set freeze(v: FreezeState | null) { this.d.freeze = v }
   get ledger(): readonly LedgerEvent[] { return this.d.ledger }
   get acts() { return this.d.acts }
@@ -257,6 +261,7 @@ export class Store {
       reservations: [...this.d.reservations.values()],
       tokenHashes: [...this.d.tokenHashes.entries()],
       freeze: this.d.freeze,
+      presets: [...this.d.presets.values()],
       ledgerHead: this.ledgerHead,
       counters: this.d.counters,
       actSeq: this.d.actSeq,

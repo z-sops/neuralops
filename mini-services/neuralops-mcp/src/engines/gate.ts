@@ -15,6 +15,39 @@
 
 import { store } from '../state/store.js'
 import { notFound } from '../errors.js'
+import { findConsumableApproval, findPendingApproval, hasAuthority, policyFor, resolveApprover } from './authority.js'
+
+export interface PerformCheck {
+  action: string
+  scope: string
+  frozen: boolean
+  /** A workspace policy covers this action/scope. */
+  governed: boolean
+  policyId: string | null
+  approver: string | null
+  /** The caller holds direct authority. */
+  authority: boolean
+  /** An approved, unused approval would be consumed by perform. */
+  usableApprovalId: string | null
+  pendingApprovalId: string | null
+}
+
+/** What `perform` would do right now, without recording or consuming anything. */
+export function performCheck(agentId: string, action: string, scope: string, taskId: string | null): PerformCheck {
+  const policy = policyFor(action, scope)
+  const now = new Date().toISOString()
+  return {
+    action,
+    scope,
+    frozen: !!store.freeze,
+    governed: !!policy,
+    policyId: policy?.id ?? null,
+    approver: policy ? resolveApprover(agentId, action, scope) : null,
+    authority: hasAuthority(agentId, action, scope),
+    usableApprovalId: findConsumableApproval(agentId, action, scope, taskId, now)?.id ?? null,
+    pendingApprovalId: findPendingApproval(agentId, action, scope, taskId)?.id ?? null,
+  }
+}
 
 export interface GateStatus {
   allowed: boolean

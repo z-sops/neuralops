@@ -18,8 +18,8 @@ export const AuthorityInput = z
 export const RegisterSchema = z.object({
   id: z
     .string()
-    .regex(/^agent\.[a-z0-9][a-z0-9_-]{1,62}$/, 'agent ids look like agent.<name> (lowercase)')
-    .describe('Agent id, e.g. "agent.reviewer"'),
+    .regex(/^(agent|human)\.[a-z0-9][a-z0-9_-]{1,62}$/, 'ids look like agent.<name> or human.<name> (lowercase)')
+    .describe('Identity id: "agent.reviewer" for an agent or persona, "human.noaman" for a person'),
   name: z.string().min(1).max(80),
   model: z.enum(AGENT_MODELS),
   role: z.string().regex(/^[a-z0-9_-]{1,40}$/, 'lowercase role, e.g. "qa"'),
@@ -32,10 +32,17 @@ export const RegisterSchema = z.object({
     .max(365 * 24 * 3600)
     .optional()
     .describe('Token lifetime; omit for a non-expiring token'),
-  access: z
-    .enum(['act', 'audit'])
+  externalId: z
+    .string()
+    .min(1)
+    .max(200)
     .optional()
-    .describe('"audit" = read-only identity for auditors: ledger, integrity, approvals and policies only; can never act'),
+    .describe('Id of this person in your sign-in system (the JWT `sub`, e.g. a Supabase user id)'),
+  access: z
+    .enum(['act', 'audit', 'broker'])
+    .optional()
+    .describe('"audit" = read-only (ledger, integrity, approvals, policies); "broker" = a service (e.g. the Nexus worker) that acts only on behalf of identities that name it as their delegate'),
+  delegate: z.string().max(128).optional().describe('Broker identity allowed to act on behalf of this one (admin only)'),
 })
 export type RegisterInput = z.input<typeof RegisterSchema>
 
@@ -93,12 +100,26 @@ export function applyRegister(agent: Agent, tokenHash: string, at: string, expir
 
 export function registerAgent(
   raw: unknown,
-  opts: { asAdmin: boolean; token?: string; now?: string; workspaceId?: string }
+  opts: { asAdmin: boolean; token?: string; now?: string; workspaceId?: string; broker?: string }
 ): { agent: Agent; token: string; expiresAt: string | null } {
   const r = RegisterSchema.safeParse(raw)
   if (!r.success) throw invalid(`Invalid registration — ${formatZodError(r.error)}`)
   const input = r.data
+  if (opts.broker) {
+    // A broker may only create plain identities it acts for: no authority, no special access.
+    if (!input.id.startsWith('agent.')) throw invalid('A broker registers agent identities only (agent.<name>)')
+    input.authority = undefined
+    input.access = undefined
+    input.delegate = opts.broker
+  } else if (!opts.asAdmin) {
+    input.delegate = undefined
+    if (input.access === 'broker') throw invalid('Only the admin can create a broker identity')
+  }
+  if (input.delegate && store.agents.get(input.delegate)?.access !== 'broker') throw invalid(`delegate ${input.delegate} is not a broker identity`)
   if (store.agents.has(input.id)) throw conflict(`Agent ${input.id} already exists`)
+  if (input.externalId && [...store.agents.values()].some((a) => a.externalId === input.externalId)) {
+    throw conflict(`externalId ${input.externalId} is already linked to another identity`)
+  }
   if (input.reportsTo && !store.agents.has(input.reportsTo)) throw notFound(`reportsTo ${input.reportsTo} not found`)
   const workspaceId = opts.workspaceId ?? [...store.workspaces.keys()][0]
   if (!workspaceId) throw conflict('No workspace exists yet')
@@ -119,7 +140,9 @@ export function registerAgent(
     subscriptions: ['workspace'],
     createdAt: at,
     revokedAt: null,
-    ...(input.access === 'audit' ? { access: 'audit' as const, subscriptions: [] } : {}),
+    ...(input.access === 'audit' || input.access === 'broker' ? { access: input.access, subscriptions: [] } : {}),
+    ...(input.delegate ? { delegate: input.delegate } : {}),
+    ...(input.externalId ? { externalId: input.externalId } : {}),
   }
   const token = opts.token ?? newToken()
   const expiresAt = input.tokenTtlSeconds ? addSeconds(at, input.tokenTtlSeconds) : null

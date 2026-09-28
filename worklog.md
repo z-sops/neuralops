@@ -270,3 +270,14 @@ Verification: 122 tests pass; backend + frontend tsc and lint clean; browser via
 - Policy presets: nexus-default, solo-dev, two-agent-team, production-gated, lockdown (`/api/presets`, apply = admin)
 - Webhook: approval.requested / approval.decided / workspace.frozen|unfrozen, HMAC-signed, one retry, silent during replay
 - 148 tests; docs 21, README, Nexus guide, pitch updated
+
+## 2026-09-28 — V0.1.6 Gaps closed + real Nexus integration
+- Read NeuralOps Nexus source (v0.8.0): it already has Auto/Ask/Off tool approvals and spend limits; license is source-available (not AGPL). Pitch corrected.
+- nexus-ai.patch: NeuralOpsToolGate extends Nexus' ToolApprovalGate (policies w/ named approver, standing approvals for unattended runs, ledger, freeze); broker identity acts for personas; tested in Nexus' own suite (+9) and live
+- Approvals: uses / validForSeconds / reason; grant_approval; perform returns via; neuralops_perform_check dry run
+- One-click signed approval links; webhook: several receivers, 3 attempts, delivery log
+- JWT identities (Supabase JWKS / HS256), externalId, human.<name>, auto-provision
+- Read scopes (NEURALOPS_AGENT_READ=involved default in secure mode)
+- Custom presets; report_block act; hooks + pre-commit report blocks
+- Bug found by live test: tool call with no arguments rejected (empty detail) — fixed
+- 159 tests; docs 22, README, Nexus guide, pitch rewritten

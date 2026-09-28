@@ -10,6 +10,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { Config } from '../config.js'
 import { checkToken } from '../engines/agents.js'
+import { identityForJwt, looksLikeJwt } from './jwt.js'
+import { seesEverything } from '../engines/visibility.js'
+import { store } from '../state/store.js'
 import { forbidden, unauthenticated } from '../errors.js'
 import type { Caller } from '../mcp/tools.js'
 
@@ -30,6 +33,12 @@ export function isAdminToken(config: Config, token: string | null): boolean {
 }
 
 export function resolveCaller(config: Config, token: string | null, claimedAgent: string | null): Caller {
+  const c = resolveIdentity(config, token, claimedAgent)
+  if (!c.isAdmin && c.agentId && config.agentRead === 'involved' && !seesEverything(c.agentId)) c.scoped = true
+  return c
+}
+
+function resolveIdentity(config: Config, token: string | null, claimedAgent: string | null): Caller {
   if (token) {
     if (isAdminToken(config, token)) {
       if (claimedAgent && config.mode === 'secure' && !config.adminCanAct) {
@@ -39,10 +48,23 @@ export function resolveCaller(config: Config, token: string | null, claimedAgent
       }
       return { agentId: claimedAgent, via: 'impersonated', isAdmin: true }
     }
+    if (config.jwt && looksLikeJwt(token)) {
+      const agentId = identityForJwt(config.jwt, token)
+      if (claimedAgent && claimedAgent !== agentId) throw forbidden(`Token belongs to ${agentId}; it cannot act as ${claimedAgent}`)
+      return { agentId, via: 'token', isAdmin: false }
+    }
     const c = checkToken(token)
     if (!c.ok) {
       const why = { unknown: 'Unknown bearer token', expired: 'Bearer token has expired — rotate it', revoked: 'This agent has been revoked' }
       throw unauthenticated(why[c.reason])
+    }
+    if (store.agents.get(c.agentId)?.access === 'broker' && claimedAgent && claimedAgent !== c.agentId) {
+      const target = store.agents.get(claimedAgent)
+      if (!target || target.delegate !== c.agentId) {
+        throw forbidden(`${c.agentId} is not the delegate of ${claimedAgent}${target ? '' : ' (no such identity; register it first)'}`)
+      }
+      if (target.revokedAt) throw unauthenticated(`${claimedAgent} has been revoked`)
+      return { agentId: claimedAgent, via: 'delegated', isAdmin: false }
     }
     if (claimedAgent && claimedAgent !== c.agentId) {
       throw forbidden(`Token belongs to ${c.agentId}; it cannot act as ${claimedAgent}`)

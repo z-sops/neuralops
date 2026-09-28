@@ -19,7 +19,8 @@ import {
   formatCompactedContext,
 } from '../engines/context.js'
 import { registerAgent, RegisterSchema } from '../engines/agents.js'
-import { gateStatus } from '../engines/gate.js'
+import { gateStatus, performCheck } from '../engines/gate.js'
+import { requireTaskVisible, view } from '../engines/visibility.js'
 import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { store } from '../state/store.js'
 import { ACT_DESCRIPTION, ACT_FAMILY, ACT_TYPES, FAMILY_DESCRIPTION, isActType } from '../protocol/act-types.js'
@@ -37,6 +38,8 @@ export interface Caller {
   agentId: string | null
   via: ActVia
   isAdmin: boolean
+  /** Read scope "involved": this caller only reads what it is part of (engines/visibility.ts). */
+  scoped?: boolean
 }
 
 export interface ToolResult {
@@ -93,6 +96,11 @@ const QUERY_SCHEMAS = {
     agentId: z.string().optional(),
     taskId: z.string().optional(),
   }),
+  neuralops_perform_check: z.object({
+    action: z.string().min(1).max(64),
+    scope: z.string().min(1).max(64).optional().describe('default "production"'),
+    taskId: z.string().optional(),
+  }),
   neuralops_gate_status: z.object({
     taskId: z.string(),
     action: z.string().optional().describe('default "complete"; e.g. "deploy"'),
@@ -119,6 +127,8 @@ const QUERY_DESCRIPTIONS: Record<QueryTool, string> = {
   neuralops_files_check:
     'Before editing, check who holds these files. blocked=true means another agent holds an exclusive reservation: do not edit; ask them or pick other work. mine=true means you already hold it.',
   neuralops_reservations: 'List active file reservations (optionally for one agent or task).',
+  neuralops_perform_check:
+    'Dry run of neuralops_perform: is this action governed by a policy, who approves it, do you hold authority or an unused approval, is the workspace frozen. Records and consumes nothing.',
   neuralops_gate_status:
     'Ask whether an action (merge = "complete", or e.g. "deploy") is cleared for a task and scope. CI and hooks enforce exactly this answer, so check it before pushing or deploying.',
 }
@@ -147,14 +157,20 @@ function parseArgs<N extends QueryTool>(name: N, args: unknown): z.infer<(typeof
   return r.data as z.infer<(typeof QUERY_SCHEMAS)[N]>
 }
 
-export function workspaceState() {
+export function workspaceState(caller?: Caller) {
+  const c = caller ?? { agentId: null }
   return {
     workspaces: [...store.workspaces.values()],
     agents: [...store.agents.values()],
-    tasks: [...store.tasks.values()],
-    pendingApprovals: [...store.approvals.values()].filter((a) => a.status === 'pending'),
+    tasks: view.tasks(c, [...store.tasks.values()]),
+    pendingApprovals: view.approvals(c, [...store.approvals.values()].filter((a) => a.status === 'pending')),
     policies: [...store.policies.values()],
   }
+}
+
+/** Scoped callers may only read tasks they are part of. */
+function checkTask(caller: Caller, taskId: string | null | undefined): void {
+  if (caller.scoped && caller.agentId && taskId) requireTaskVisible(caller.agentId, taskId)
 }
 
 export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolResult {
@@ -176,10 +192,10 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
       }
       case 'neuralops_workspace':
         parseArgs(name, args)
-        return { ok: true, result: workspaceState() }
+        return { ok: true, result: workspaceState(caller) }
       case 'neuralops_tasks': {
         const { status } = parseArgs(name, args)
-        const all = [...store.tasks.values()]
+        const all = view.tasks(caller, [...store.tasks.values()])
         return { ok: true, result: status ? all.filter((t) => t.status === status) : all }
       }
       case 'neuralops_inbox':
@@ -187,17 +203,33 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         return { ok: true, result: { ...getInbox(requireAgent(caller)), frozen: store.freeze } }
       case 'neuralops_get_task_context': {
         const { taskId, format } = parseArgs(name, args)
+        checkTask(caller, taskId)
         const ctx = getCompactedContext(taskId)
         return { ok: true, result: format === 'json' ? ctx : { text: formatCompactedContext(ctx), tokens: ctx.tokens, method: ctx.method } }
       }
-      case 'neuralops_get_full_context':
-        return { ok: true, result: getFullContext(parseArgs(name, args).taskId) }
-      case 'neuralops_get_evidence':
-        return { ok: true, result: getEvidenceById(parseArgs(name, args).evidenceId) }
-      case 'neuralops_get_decision':
-        return { ok: true, result: getDecisionById(parseArgs(name, args).decisionId) }
-      case 'neuralops_get_original_context':
-        return { ok: true, result: getOriginalContext(parseArgs(name, args).actId) }
+      case 'neuralops_get_full_context': {
+        const { taskId } = parseArgs(name, args)
+        checkTask(caller, taskId)
+        return { ok: true, result: getFullContext(taskId) }
+      }
+      case 'neuralops_get_evidence': {
+        const r = getEvidenceById(parseArgs(name, args).evidenceId)
+        checkTask(caller, r.taskId)
+        return { ok: true, result: r }
+      }
+      case 'neuralops_get_decision': {
+        const r = getDecisionById(parseArgs(name, args).decisionId)
+        checkTask(caller, r.taskId)
+        return { ok: true, result: r }
+      }
+      case 'neuralops_get_original_context': {
+        const r = getOriginalContext(parseArgs(name, args).actId)
+        if (caller.scoped && caller.agentId && r.from !== caller.agentId) {
+          if (!r.taskId) throw forbidden(`${caller.agentId} may only read its own acts or acts on tasks it is part of (read scope "involved").`)
+          checkTask(caller, r.taskId)
+        }
+        return { ok: true, result: r }
+      }
       case 'neuralops_files_check': {
         const a = parseArgs(name, args)
         return { ok: true, result: checkPaths(caller.agentId, a.paths) }
@@ -205,6 +237,10 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
       case 'neuralops_reservations': {
         const a = parseArgs(name, args)
         return { ok: true, result: activeReservations().filter((r) => (!a.agentId || r.agentId === a.agentId) && (!a.taskId || r.taskId === a.taskId)) }
+      }
+      case 'neuralops_perform_check': {
+        const a = parseArgs(name, args)
+        return { ok: true, result: performCheck(requireAgent(caller), a.action, a.scope ?? 'production', a.taskId ?? null) }
       }
       case 'neuralops_gate_status': {
         const a = parseArgs(name, args)
@@ -248,6 +284,7 @@ function actToolResult(res: ActResult): ToolResult {
       task: res.task,
       reservation: res.reservation,
       ...(res.allowed === undefined ? {} : { allowed: res.allowed }),
+      ...(res.via === undefined ? {} : { via: res.via }),
       ledgerEvent: res.ledgerEvent
         ? { seq: res.ledgerEvent.seq, deltaSummary: res.ledgerEvent.deltaSummary, hash: res.ledgerEvent.hash }
         : null,

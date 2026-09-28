@@ -24,6 +24,9 @@ export function setupWebSocket(httpServer: HTTPServer, config: Config): { io: IO
         if (caller.agentId && store.agents.get(caller.agentId)?.access === 'audit') {
           throw new Error('Read-only audit identities use GET /api/ledger and /api/integrity, not the live stream')
         }
+        if (caller.scoped) {
+          throw new Error('The live stream carries the whole workspace; with read scope "involved" it needs the admin token (agents use their inbox)')
+        }
         next()
       } catch (e) {
         next(e as Error)

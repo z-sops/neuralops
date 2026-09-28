@@ -189,9 +189,32 @@ export const PerformPayload = z.object({
   detail: text(1000).optional().describe('Exactly what will happen (tool arguments), shown to the approver'),
 })
 
+const Uses = z.number().int().min(1).max(1000)
+const ValidFor = z.number().int().min(60).max(30 * 24 * 3600)
+
+export const ReportBlockPayload = z.object({
+  enforcer: z.enum(['claude-code', 'codex', 'gemini', 'git-pre-commit', 'guard', 'ci', 'other']).describe('What stopped the action'),
+  tool: text(100).describe('The tool or command that was stopped, e.g. "Edit", "git push", "create_invoice"'),
+  reason: text(1000),
+  target: text(500).optional().describe('File, branch or resource involved'),
+  taskId: id.optional(),
+})
+
 export const AuthorizePayload = z.object({
   approvalId: id,
   reason: text(1000).optional().describe('Why you approve (recorded in the ledger for the audit trail)'),
+  uses: Uses.optional().describe('Let this approval unlock up to N acts (default 1)'),
+  validForSeconds: ValidFor.optional().describe('Approval expires after this many seconds (default: no expiry)'),
+})
+
+export const GrantApprovalPayload = z.object({
+  to: id.describe('Who may act (an agent or persona id)'),
+  action: text(64),
+  scope: text(64).default('production'),
+  taskId: id.optional(),
+  uses: Uses.default(1).describe('How many acts it may unlock'),
+  validForSeconds: ValidFor.default(24 * 3600).describe('Expires after this many seconds (default 24h)'),
+  reason: text(1000).describe('Why this standing approval is given'),
 })
 
 export const DenyPayload = z.object({
@@ -240,6 +263,8 @@ export const PAYLOAD_SCHEMAS = {
   request_approval: RequestApprovalPayload,
   authorize: AuthorizePayload,
   perform: PerformPayload,
+  grant_approval: GrantApprovalPayload,
+  report_block: ReportBlockPayload,
   deny: DenyPayload,
   escalate: EscalatePayload,
   subscribe: SubscribePayload,

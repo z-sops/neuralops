@@ -3,7 +3,9 @@
 //
 // 26 act types in 6 families. V0.1.1 added `create_task`; V0.1.3 added
 // `reserve_files` / `release_files` (file reservations); V0.1.4 adds `perform`
-// (a gated action such as an MCP tool call, checked and logged before it runs).
+// (a gated action such as an MCP tool call, checked and logged before it runs);
+// V0.1.6 adds `grant_approval` (standing, multi-use, time-boxed approvals) and
+// `report_block` (an enforcer recording what it stopped).
 
 export type ActFamily =
   | 'task'
@@ -37,6 +39,8 @@ export const ACT_FAMILY = {
   deny: 'authority',
   escalate: 'authority',
   perform: 'authority',
+  grant_approval: 'authority',
+  report_block: 'lifecycle',
   subscribe: 'lifecycle',
   unsubscribe: 'lifecycle',
   ack: 'lifecycle',
@@ -98,6 +102,10 @@ export const ACT_DESCRIPTION: Record<ActType, string> = {
   deny: 'Deny a pending approval. Allowed for approvers (as above) and agents holding veto authority (`deny` on that scope).',
   perform:
     'Ask to perform a gated action BEFORE doing it (e.g. an MCP tool call that writes to a real system: action "odoo.write", scope "production"). Allowed at once with direct authority or when no policy governs the action; otherwise it consumes an approved single-use approval, or creates one and returns allowed=false. Every call is logged. Do not run the action unless the result says allowed=true.',
+  grant_approval:
+    'Approve in advance: let another identity perform action/scope up to `uses` times within `validForSeconds` (e.g. a scheduled persona run nobody watches). Only someone who could approve such a request may grant it, and never to themselves.',
+  report_block:
+    'Record that an enforcer (a pre-tool hook, the git pre-commit hook, the guard or CI) stopped this agent, and why. Sent automatically by the NeuralOps hooks so blocks show up in the ledger.',
   escalate: 'Escalate a task to another agent. The task becomes blocked and the target may take it over by claiming it.',
   subscribe: 'Subscribe to a task, `workspace`, or `role:<name>`.',
   unsubscribe: 'Unsubscribe from a task, `workspace`, or `role:<name>`.',

@@ -1,215 +1,154 @@
-# NeuralOps Gate for NeuralOps Nexus
+# NeuralOps for NeuralOps Nexus
 
-NeuralOps Nexus is where people, personas and agents work together. NeuralOps
-Gate is the rulebook and the record underneath it: before a persona's tool call
-touches a real system, the gate decides whether it may run now, whether a
-human has to approve it first, or whether everything is frozen. Every call
-lands in a signed, replayable ledger.
+Nexus already lets every persona tool run at a level — **Auto**, **Ask** or
+**Off** — and holds an Ask tool until someone in the topic decides. NeuralOps
+plugs into exactly that mechanism and adds what a team running personas
+against real systems needs next:
 
-```
- Nexus chat ── @Layla "bill ACME 5000"
-      │
-  nexus-ai (pydantic-ai) ── tool call: odoo/create_invoice {...}
-      │
-      ├─► NeuralOps Gate  POST /api/tools/neuralops_perform   ← neuralops_guard.py
-      │       allowed?  → run the tool, ledger event
-      │       approval? → do NOT run; "needs approval_0007 from agent.noaman"
-      │       frozen?   → do NOT run
-      ▼
-  Odoo / DB / email / any MCP server
-```
-
-Three pieces, all in this folder or the core:
-
-| Piece | What it does |
+| Nexus today (v0.8) | With NeuralOps on top |
 |---|---|
-| `POST /mcp` (streamable HTTP) | NeuralOps' own 39 tools for personas (inbox, tasks, handoffs, decisions, `neuralops_perform`, …). Register it in Nexus like any MCP server. |
-| `neuralops_guard.py` | Gates **other** MCP servers' tool calls inside `nexus-ai` (pydantic-ai `process_tool_call`), or any Python tool with a decorator. Standard library only. |
-| Kill switch | `POST /api/admin/freeze` stops every persona and agent at once; `POST /api/admin/unfreeze` resumes. |
+| Anyone in the topic with the right can allow an Ask tool | **Policies name the approver** per action (`odoo.write/production → Noaman`), with approver chain, veto and no self-approval; a governed action waits for that person even if the tool is set to Auto |
+| Schedules and swarms refuse every Ask tool (nobody can approve) | **Standing approvals**: an approver grants "Layla may `odoo.write` 20 times today"; unattended runs use it, and otherwise leave a request for later |
+| The decision is a row in the Nexus database | **Signed ledger**: every acting call, approval (with reason), refusal and block is hash-chained and replayable; auditors get a read-only token |
+| Stopping means editing each persona | **Kill switch**: one call freezes every persona's tools |
+| Approvals happen in the Nexus topic | Also from a **one-click link** (webhook → chat, Slack, email), recorded as the approver themselves |
 
-## 1. Run the core where `nexus-ai` can reach it
+Everything NeuralOps does not govern keeps Nexus' own levels and topic
+decisions exactly as before.
 
-Tool calls come from inside the `nexus-ai` container, so `localhost` will not
-work — use the host's real IP (the same rule Nexus uses for its own MCP
-servers). Network access requires secure mode:
+```
+ @Layla "bill ACME 5000"  →  nexus-ai (pydantic-ai)  →  tool call create_invoice
+                                   │
+                    NeuralOpsToolGate (extends Nexus' ToolApprovalGate)
+                     ├─ frozen?                      → skip, tell the model
+                     ├─ governed by a policy?        → perform → allowed (authority / standing approval)
+                     │                                  or wait for the named approver (link, webhook, API)
+                     └─ not governed                 → Nexus Auto/Ask/Off as today; acting calls recorded
+```
+
+## What is in this folder
+
+| File | What it is |
+|---|---|
+| `nexus-ai.patch` | The change to Nexus (tested against `mapax-io/neuralops-nexus` @ `939af00`, server 0.8.0): adds `apps/managers/neuralops_gate.py` + `neuralops_guard.py`, four `NEURALOPS_*` settings, the gate in the pydantic-ai runner, and `apps/tests/test_neuralops_gate.py` (9 tests). Off unless `NEURALOPS_URL` is set. |
+| `nexus_gate.py` | `NeuralOpsToolGate` — the source of `apps/managers/neuralops_gate.py` |
+| `neuralops_guard.py` | Standard-library client for the NeuralOps core (also usable on its own: `process_tool_call`, a decorator) |
+| `test_nexus_gate_live.py` | Nexus' real gate + NeuralOps against a live core (run by `tests/nexus-gate.test.ts` when `NEXUS_DIR` points at a patched checkout) |
+| `test_guard.py` | The guard against a live core, including a real pydantic-ai agent |
+
+## Setup (about 20 minutes)
+
+### 1. Run the core where `nexus-ai` can reach it
+
+Tool calls come from inside the `nexus-ai` container, so use the host's IP,
+not `localhost`. Network access requires secure mode:
 
 ```bash
 cd mini-services/neuralops-mcp
-NEURALOPS_MODE=secure \
-NEURALOPS_HOST=0.0.0.0 \
-NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) \
-NEURALOPS_JOURNAL_KEY=$(openssl rand -hex 32) \
+NEURALOPS_MODE=secure NEURALOPS_HOST=0.0.0.0 \
+NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) NEURALOPS_JOURNAL_KEY=$(openssl rand -hex 32) \
+NEURALOPS_PUBLIC_URL=https://ops.example.com NEURALOPS_LINK_SECRET=$(openssl rand -hex 24) \
 bun src/index.ts
 ```
 
-Keep the admin token; it is the only way to register agents, set policies and
-use the kill switch. Put the core behind HTTPS (e.g. Tailscale, like Nexus)
-before exposing it beyond a LAN.
+`NEURALOPS_PUBLIC_URL` + `NEURALOPS_LINK_SECRET` turn on one-click approval
+links (optional). Put the core behind HTTPS before exposing it beyond a LAN.
 
-## 2. Register people and personas
-
-Every Nexus person who approves things and every persona that acts gets an
-identity with its own token (ids are `agent.<name>`; a person is simply an
-identity with no model behind it):
+### 2. Create the worker's broker identity, the approvers and the rulebook
 
 ```bash
 A="Authorization: Bearer $ADMIN"; J="Content-Type: application/json"; CORE=http://<host-ip>:3031
 
+# the nexus-ai worker: acts only on behalf of personas (token shown once → NEURALOPS_TOKEN in nexus-ai)
 curl -s -X POST $CORE/api/agents -H "$A" -H "$J" \
-  -d '{"id":"agent.noaman","name":"Noaman","model":"Custom","role":"lead"}'
+  -d '{"id":"agent.nexus-worker","name":"Nexus worker","model":"Custom","role":"service","access":"broker"}'
+
+# the people who approve (externalId = their Supabase user id, see step 5)
 curl -s -X POST $CORE/api/agents -H "$A" -H "$J" \
-  -d '{"id":"agent.layla","name":"Layla","model":"Claude","role":"analyst","reportsTo":"agent.noaman"}'
-# → each returns a token, shown once
+  -d '{"id":"human.noaman","name":"Noaman","model":"Custom","role":"lead","externalId":"<supabase user id>"}'
+
+# the rulebook in one call (or POST /api/policies one at a time)
+curl -s -X POST $CORE/api/presets/nexus-default/apply -H "$A" -H "$J" -d '{"approver":"human.noaman"}'
 ```
 
-## 3. Say what needs approval
+`nexus-default` governs `odoo.write`, `odoo.delete`, `db.write`,
+`email.send`, `payment.send`, `file.delete` and `deploy` in `production`.
+Define your own with `POST /api/presets` (admin). Personas are created
+automatically on first use as `agent.persona-<persona id>`, delegated to the
+worker; the worker can act for them and for nothing else.
 
-Policies name an action, a scope and the approver. An action no policy covers
-runs at once (and is still logged). A `*`/`*` policy makes everything need
-approval.
-
-The quickest start is the `nexus-default` preset: writes to Odoo and databases,
-sending email, payments, file deletes and deploys (all in `production`) need
-the approver you name; reading and searching flow.
+### 3. Apply the patch to Nexus
 
 ```bash
-curl -s $CORE/api/presets/nexus-default -H "$A"                      # see what it sets
-curl -s -X POST $CORE/api/presets/nexus-default/apply -H "$A" -H "$J" \
-  -d '{"approver":"agent.noaman"}'
+cd neuralops-nexus
+git apply /path/to/neuralops/mini-services/neuralops-mcp/integrations/nexus/nexus-ai.patch
 ```
 
-Or one policy at a time:
+and set in `nexus-ai`'s environment:
+
+```
+NEURALOPS_URL=http://<host-ip>:3031
+NEURALOPS_TOKEN=<agent.nexus-worker token>
+NEURALOPS_ACTIONS={"create_invoice":"odoo.write","delete_partner":"odoo.delete","send_email":"email.send"}
+```
+
+Tool names map to governed actions through `NEURALOPS_ACTIONS`; unmapped
+tools are `tool.<name>` and stay ungoverned unless a policy (or `lockdown`)
+says otherwise.
+
+### 4. Tell people when they are needed
 
 ```bash
-curl -s -X POST $CORE/api/policies -H "$A" -H "$J" \
-  -d '{"action":"odoo.write","scope":"production","approver":"agent.noaman"}'
+NEURALOPS_WEBHOOK_URL=https://<nexus-host>/hooks/neuralops,https://hooks.slack.com/... \
+NEURALOPS_WEBHOOK_SECRET=$(openssl rand -hex 16)
 ```
 
-Other presets: `solo-dev`, `two-agent-team`, `production-gated`, `lockdown`
-(`GET /api/presets`). Re-applying a preset updates its policies instead of
-duplicating them.
+`approval.requested` carries the approval (tool, arguments flagged as
+untrusted, approver) and, with links on, `links.page`: a page where the
+approver sees the request and presses Approve or Deny. The page never decides
+on a GET (link previews are safe), the link is bound to that approval and
+approver, expires (`NEURALOPS_LINK_TTL`, default 24h) and works once.
+Deliveries are signed (`X-NeuralOps-Signature: sha256=<HMAC>`), retried
+twice, and listed at `GET /api/webhooks/deliveries` (admin).
 
-Approvals are single-use and bound to the requester, the action and the
-scope; nobody can approve their own request, and an identity with `deny`
-authority on the scope can veto.
+### 5. Let people use their Nexus sign-in (optional)
 
-## 4. Gate tool calls in `nexus-ai`
+Nexus signs people in with Supabase. Give NeuralOps the project's JWT
+settings and a Supabase access token works as a NeuralOps bearer token for
+the linked identity:
 
-Copy `neuralops_guard.py` into `nexus-ai` and pass the guard wherever
-`nexus-ai` builds the MCP toolsets for an agent:
-
-```python
-from neuralops_guard import NeuralOpsGuard
-
-guard = NeuralOpsGuard(
-    url="http://<host-ip>:3031",
-    token=persona.neuralops_token,             # this persona's own token
-    actions={                                  # tool name → governed action
-        "create_invoice": "odoo.write",
-        "update_partner": "odoo.write",
-        "delete_record":  "odoo.delete",
-    },
-    # unmapped tools become "tool.<name>" — ungoverned unless a policy says otherwise
-)
-
-toolset = MCPToolset(client, process_tool_call=guard.process_tool_call)          # pydantic-ai 2.x
-# older pydantic-ai: MCPServerStreamableHTTP(url, process_tool_call=guard.process_tool_call)
+```
+NEURALOPS_JWT_JWKS_URL=https://<ref>.supabase.co/auth/v1/.well-known/jwks.json   # or NEURALOPS_JWT_SECRET (legacy HS256)
+NEURALOPS_JWT_AUDIENCE=authenticated
+NEURALOPS_JWT_AUTO_PROVISION=1     # optional: first sign-in creates human.<name> with no authority
 ```
 
-For plain Python tools:
+So a Nexus approvals screen can call `POST /api/acts` `authorize` with the
+person's own session token.
 
-```python
-@agent.tool_plain
-@guard.guarded("email.send")
-def send_email(to: str, subject: str, body: str) -> str: ...
-```
+## Everyday use
 
-When a call is not allowed, the tool does not run and the model receives a
-short text such as `[NeuralOps] create_invoice was NOT run: it needs approval
-approval_0007 from agent.noaman. Tell the user it is waiting for approval…`.
-If the core is unreachable the guard fails closed (`fail_open=True` changes
-that).
-
-## 5. Give personas NeuralOps' own tools (optional)
-
-Register NeuralOps as an MCP server in Nexus:
-
-| Field | Value |
+| Need | How |
 |---|---|
-| URL | `http://<host-ip>:3031/mcp` |
-| Transport | `streamable-http` |
-| Header | `Authorization: Bearer <persona token>` |
+| Approve with a reason, for more than one call | `authorize {approvalId, reason?, uses?: N, validForSeconds?: S}` |
+| Pre-approve a scheduled persona | `grant_approval {to: "agent.persona-<id>", action, scope, uses, validForSeconds, reason}` (by someone who could approve it) |
+| See what is waiting on me | `GET /api/inbox` → `approvalsToDecide` |
+| Stop everything | `POST /api/admin/freeze {"reason": "…"}` · resume with `/api/admin/unfreeze` |
+| Give a client's auditor access | register with `"access": "audit"`: reads the ledger, integrity proof, approvals and policies; can never act |
+| Audit | `GET /api/ledger`, `GET /api/integrity` |
 
-If Nexus cannot send a header for an MCP server, start the core with
-`NEURALOPS_MCP_URL_TOKENS=1` and use `http://<host-ip>:3031/mcp/<persona token>`
-(the token then appears in URLs and logs, so prefer the header). Tokens are
-per identity, so each persona that should act as itself needs its own entry.
-
-## 6. Tell Nexus when a person is needed (webhook)
-
-Start the core with a webhook and Nexus (or Slack, or a pager) is told the
-moment an approval is waiting:
-
-```bash
-NEURALOPS_WEBHOOK_URL=http://<nexus-host>/hooks/neuralops \
-NEURALOPS_WEBHOOK_SECRET=$(openssl rand -hex 16) \
-... bun src/index.ts
-```
-
-Each event is a JSON POST:
-
-```json
-{ "event": "approval.requested", "at": "2026-09-28T07:12:03.120Z",
-  "approval": { "id": "approval_0007", "action": "odoo.write", "scope": "production",
-                "requestedBy": "agent.layla", "approver": "agent.noaman",
-                "detail": "create_invoice: {\"partner\":\"ACME\",\"amount\":5000}", "status": "pending", "...": "..." },
-  "ledger": { "seq": 41, "actId": "act_000019", "actType": "perform", "actor": "agent.layla", "summary": "...", "hash": "..." } }
-```
-
-Events: `approval.requested`, `approval.decided` (with `status` and the
-approver's `reason`), `workspace.frozen`, `workspace.unfrozen`. With a secret,
-verify `X-NeuralOps-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>`
-before trusting a call. `detail` is written by the requesting persona: show it
-to people, and if a model reads it, treat it as data (it arrives flagged when
-it looks like instructions). Delivery never blocks an act; a failed POST is
-retried once after 2 seconds.
-
-A natural flow: the webhook posts an `@form` into the approver's Nexus chat;
-the form's buttons call `authorize` (with an optional `reason`) or `deny`
-with the approver's own token.
-
-## 7. Approvals, audit and the kill switch
-
-| Need | Call |
-|---|---|
-| What is waiting on a person | `GET /api/inbox` with that person's token → `approvalsToDecide` |
-| Approve / deny | `POST /api/acts` `{"type":"authorize","payload":{"approvalId":"approval_0007","reason":"agreed on the call"}}` (`reason` optional), or `deny` with a `reason` |
-| Live feed | WebSocket `ledger:event` |
-| Audit log | `GET /api/ledger`, `GET /api/integrity` (hash chain + replay check) |
-| Give a client's auditor access | register with `"access":"audit"`: that token can read the ledger, integrity proof, approvals and policies, and can never act |
-| Stop everything | `POST /api/admin/freeze {"reason":"…"}` (admin) — acts, gates, guard, hooks all refuse |
-| Resume | `POST /api/admin/unfreeze` |
-
-Nexus' `@form` output is a natural place for the approve/deny buttons: the
-form posts `authorize` or `deny` with the approver's own token.
+With read scope `involved` (the default in secure mode) personas and people
+read only the tasks, approvals and ledger entries they are part of; governors
+and the admin see everything.
 
 ## Tested
 
-`tests/nexus.test.ts` (perform, freeze, `/mcp` over streamable HTTP with
-per-persona tokens), `tests/governance.test.ts` (presets, approval reasons,
-audit identities, the signed webhook with retry) and `tests/nexus-guard.test.ts`, which runs
-`test_guard.py` against a live secure-mode core: ungoverned calls, the
-approval round-trip through `process_tool_call`, single use, the decorator,
-fail-closed, freeze, and a real pydantic-ai agent whose tool must not run
-before approval.
+- **In Nexus' own test suite** (patched clone): `test_neuralops_gate.py` (9 tests) and Nexus' `test_tool_approvals.py` (22) pass; the rest of the suite gives the same result with and without the patch.
+- **Live** (`tests/nexus-gate.test.ts` with `NEXUS_DIR`): Nexus' real `ToolApprovalGate` + `NeuralOpsToolGate` against a secure core — persona identity created and delegated to the worker; a governed call waits for the named approver and runs once approved; a denial reaches the model with the reason; a standing approval lets an unattended run act, then the next call leaves a request; ungoverned tools keep Nexus' Ask and are recorded; a frozen workspace stops the persona. This test found and fixed a real bug (a tool with no arguments was rejected).
 
 ## Limits
 
-- Not yet run inside a real Nexus deployment; the integration points above
-  come from the Nexus README (`nexus-ai` runs pydantic-ai; MCP servers are
-  registered by URL; streamable-http is the default transport).
-- One token per persona: Nexus' own users (Supabase) are not mapped
-  automatically yet — register them once as above.
-- Approvals are single-use; a persona that repeats a governed action many
-  times needs one approval each time (batch or time-boxed approvals are a
-  possible next step).
+- Not yet run inside a full Nexus deployment (web app, nucleus, relay); the patch is tested at the worker level.
+- While a governed call waits for its approver, the Nexus topic shows the run as working, not a NeuralOps-specific "waiting for Noaman" card; the webhook and link carry that message.
+- The LiteLLM runner (`AGENT_BACKEND=litellm`) is not covered — Nexus' own open item says its MCP path is not wired to tool approvals either.
+- Each tool call makes one policy check to the core (on the LAN, a few milliseconds).

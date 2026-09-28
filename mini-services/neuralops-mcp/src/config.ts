@@ -23,7 +23,15 @@
 //                                   for MCP hosts that cannot send an Authorization header. The token
 //                                   then appears in URLs/logs — prefer the header.
 // NEURALOPS_WEBHOOK_URL             POST approval.requested / approval.decided / workspace.frozen|unfrozen here
+//                                   (comma-separated for several receivers)
 // NEURALOPS_WEBHOOK_SECRET          optional HMAC-SHA256 key → X-NeuralOps-Signature: sha256=<hex>
+// NEURALOPS_PUBLIC_URL              how people reach this core (e.g. https://ops.example.com); enables one-click approval links
+// NEURALOPS_LINK_SECRET             HMAC key for approval links (16+ chars; required with NEURALOPS_PUBLIC_URL)
+// NEURALOPS_LINK_TTL                approval link lifetime in seconds (default 86400)
+// NEURALOPS_JWT_SECRET / NEURALOPS_JWT_JWKS_URL / NEURALOPS_JWT_ISSUER / NEURALOPS_JWT_AUDIENCE /
+// NEURALOPS_JWT_AUTO_PROVISION      accept your sign-in system's JWTs (e.g. Supabase) as identities; see server/jwt.ts
+// NEURALOPS_AGENT_READ              "involved" (default in secure mode): an agent reads only tasks, approvals and
+//                                   ledger entries it is part of; "workspace" (default in demo): everything
 
 export type Mode = 'demo' | 'secure'
 
@@ -40,13 +48,25 @@ export interface Config {
   corsOrigin: string | null
   seedOnEmpty: boolean
   mcpUrlTokens: boolean
-  webhook: { url: string; secret: string | null } | null
+  webhook: { urls: string[]; secret: string | null } | null
+  links: { publicUrl: string; secret: string; ttlSeconds: number } | null
+  jwt: { secret: string | null; jwksUrl: string | null; issuer: string | null; audience: string | null; autoProvision: boolean } | null
+  agentRead: 'workspace' | 'involved'
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
 
 export function isLoopbackHost(host: string): boolean {
   return LOOPBACK.has(host) || host.startsWith('127.')
+}
+
+function linkConfig(env: Record<string, string | undefined>): Config['links'] {
+  const publicUrl = env.NEURALOPS_PUBLIC_URL
+  if (!publicUrl) return null
+  const secret = env.NEURALOPS_LINK_SECRET || ''
+  if (secret.length < 16) throw new Error('NEURALOPS_PUBLIC_URL enables approval links: set NEURALOPS_LINK_SECRET (at least 16 characters).')
+  if (!/^https?:\/\//.test(publicUrl)) throw new Error('NEURALOPS_PUBLIC_URL must start with http:// or https://')
+  return { publicUrl, secret, ttlSeconds: Math.max(60, Number(env.NEURALOPS_LINK_TTL || 86400)) }
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -87,6 +107,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     corsOrigin: env.NEURALOPS_CORS_ORIGIN ?? (mode === 'demo' ? '*' : null),
     seedOnEmpty: mode === 'demo',
     mcpUrlTokens: env.NEURALOPS_MCP_URL_TOKENS === '1',
-    webhook: env.NEURALOPS_WEBHOOK_URL ? { url: env.NEURALOPS_WEBHOOK_URL, secret: env.NEURALOPS_WEBHOOK_SECRET || null } : null,
+    webhook: env.NEURALOPS_WEBHOOK_URL
+      ? { urls: env.NEURALOPS_WEBHOOK_URL.split(',').map((u) => u.trim()).filter(Boolean), secret: env.NEURALOPS_WEBHOOK_SECRET || null }
+      : null,
+    links: linkConfig(env),
+    jwt:
+      env.NEURALOPS_JWT_SECRET || env.NEURALOPS_JWT_JWKS_URL
+        ? {
+            secret: env.NEURALOPS_JWT_SECRET || null,
+            jwksUrl: env.NEURALOPS_JWT_JWKS_URL || null,
+            issuer: env.NEURALOPS_JWT_ISSUER || null,
+            audience: env.NEURALOPS_JWT_AUDIENCE || null,
+            autoProvision: env.NEURALOPS_JWT_AUTO_PROVISION === '1',
+          }
+        : null,
+    agentRead: env.NEURALOPS_AGENT_READ === 'workspace' || env.NEURALOPS_AGENT_READ === 'involved' ? env.NEURALOPS_AGENT_READ : mode === 'secure' ? 'involved' : 'workspace',
   }
 }

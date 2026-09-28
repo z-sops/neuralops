@@ -99,6 +99,18 @@ export function applyAdmin(rec: AdminRecord): void {
       audit(rec, { revokedAt: null }, { revokedAt: rec.at }, `${rec.by} REVOKED ${rec.agentId} — all its tokens are invalid`)
       break
     }
+    case 'preset_set': {
+      const before = store.presets.get(rec.preset.name) ?? null
+      store.presets.set(rec.preset.name, structuredClone(rec.preset))
+      audit(rec, { preset: before }, { preset: rec.preset }, `${rec.by} ${before ? 'updated' : 'defined'} preset ${rec.preset.name}: ${rec.preset.policies.map((p) => `${p.action}/${p.scope}`).join(', ')}`)
+      break
+    }
+    case 'preset_delete': {
+      const before = store.presets.get(rec.name) ?? null
+      store.presets.delete(rec.name)
+      audit(rec, { preset: before }, {}, `${rec.by} deleted preset ${rec.name}`)
+      break
+    }
     case 'freeze': {
       const before = store.freeze
       store.freeze = rec.frozen ? { reason: rec.reason, by: rec.by, at: rec.at } : null

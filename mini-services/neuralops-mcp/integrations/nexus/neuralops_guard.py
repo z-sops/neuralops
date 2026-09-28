@@ -1,27 +1,26 @@
-"""NeuralOps guard for NeuralOps Nexus (nexus-ai) — gate every MCP tool call.
+"""NeuralOps guard — gate tool calls on NeuralOps policies (for NeuralOps Nexus and any Python agent).
 
-Before a persona's tool call reaches a real system (Odoo, a database, email,
-payments, a shell), the guard asks the NeuralOps core with the `perform` act:
+Before a tool call reaches a real system (Odoo, a database, email, payments, a
+shell), the guard asks the NeuralOps core with the `perform` act:
 
   * allowed   -> the tool runs, and the call is in the signed ledger
   * pending   -> the tool does NOT run; the model gets a short message naming
-                 the approval id and the human who must approve it
+                 the approval id and the person who must approve it
   * frozen    -> the tool does NOT run (kill switch / incident mode)
   * core down -> fail closed by default (fail_open=True to let calls through)
 
-Standard library only (urllib), so it drops into nexus-ai without new deps.
+Standard library only (urllib), so it drops into any service without new deps.
 
-pydantic-ai (MCP toolsets / MCP servers accept ``process_tool_call``)::
+Identity, two ways:
+  * one token per agent:              NeuralOpsGuard(url, token=<that agent's token>)
+  * a broker acting for many personas: NeuralOpsGuard(url, token=<broker token>, act_as="agent.persona-layla")
+    (the broker may only act for identities that name it as their delegate;
+    ``ensure_identity`` creates one on first use)
 
-    from neuralops_guard import NeuralOpsGuard
+For NeuralOps Nexus, use ``nexus_gate.NeuralOpsToolGate`` (it wraps Nexus'
+own Auto/Ask/Off tool approvals). For any pydantic-ai MCP toolset::
 
-    guard = NeuralOpsGuard(
-        url="http://<host-ip>:3031",          # the core, reachable from the container
-        token=persona_neuralops_token,         # one token per persona
-        actions={"create_invoice": "odoo.write", "delete_partner": "odoo.delete"},
-    )
-    toolset = MCPToolset(client, process_tool_call=guard.process_tool_call)   # pydantic-ai 2.x
-    # older pydantic-ai: MCPServerStreamableHTTP(url, process_tool_call=guard.process_tool_call)
+    toolset = MCPToolset(client, process_tool_call=guard.process_tool_call)
 
 Plain Python tools::
 
@@ -38,13 +37,15 @@ import functools
 import inspect
 import json
 import os
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Callable, Mapping
 
 __all__ = ["NeuralOpsGuard", "Decision", "ToolBlocked"]
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class Decision:
     approver: str | None = None
     act_id: str | None = None
     frozen: bool = False
+    #: why it was allowed: "authority" | "ungoverned" | "approval" (None when not allowed)
+    via: str | None = None
 
 
 class ToolBlocked(Exception):
@@ -65,12 +68,17 @@ class ToolBlocked(Exception):
         self.decision = decision
 
 
+class CoreUnreachable(Exception):
+    pass
+
+
 class NeuralOpsGuard:
     def __init__(
         self,
         url: str | None = None,
         token: str | None = None,
         *,
+        act_as: str | None = None,
         scope: str | None = None,
         actions: Mapping[str, str] | None = None,
         default_action: Callable[[str], str] | None = None,
@@ -82,6 +90,7 @@ class NeuralOpsGuard:
     ) -> None:
         self.url = (url or os.environ.get("NEURALOPS_URL") or "http://127.0.0.1:3031").rstrip("/")
         self.token = token if token is not None else os.environ.get("NEURALOPS_TOKEN", "")
+        self.act_as = act_as
         self.scope = scope or os.environ.get("NEURALOPS_SCOPE") or "production"
         self.actions = dict(actions or {})
         self.default_action = default_action or (lambda tool: f"tool.{tool}")
@@ -92,15 +101,20 @@ class NeuralOpsGuard:
         self.timeout = timeout
         self.max_detail = max_detail
 
-    # ------------------------------------------------------------------ core call
+    # ------------------------------------------------------------------ transport
     def action_for(self, tool_name: str) -> str:
         return self.actions.get(tool_name) or self.default_action(tool_name)
 
-    def _post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None, *, as_self: bool = False) -> tuple[int, Any]:
+        headers = {"Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), headers=headers, method="POST")
+        if self.act_as and not as_self:
+            headers["X-Agent-Id"] = self.act_as
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as res:
                 return res.status, json.loads(res.read() or b"{}")
@@ -109,30 +123,38 @@ class NeuralOpsGuard:
                 return e.code, json.loads(e.read() or b"{}")
             except ValueError:
                 return e.code, {"ok": False, "error": f"HTTP {e.code}"}
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise CoreUnreachable(f"NeuralOps core unreachable at {self.url} ({e})") from e
 
-    def check(self, tool_name: str, args: Mapping[str, Any] | None = None, *, task_id: str | None = None,
-              action: str | None = None, scope: str | None = None) -> Decision:
-        """Ask NeuralOps whether this tool call may run now (synchronous)."""
+    def _post(self, path: str, body: dict[str, Any]) -> tuple[int, Any]:
+        return self._request("POST", path, body)
+
+    def _detail(self, args: Mapping[str, Any] | str | None) -> str:
+        detail = args if isinstance(args, str) else json.dumps(dict(args or {}), default=str, ensure_ascii=False)
+        return detail if len(detail) <= self.max_detail else detail[: self.max_detail] + "…"
+
+    # ------------------------------------------------------------------ perform
+    def check(self, tool_name: str, args: Mapping[str, Any] | str | None = None, *, task_id: str | None = None,
+              action: str | None = None, scope: str | None = None, target: str | None = None) -> Decision:
+        """Ask NeuralOps whether this tool call may run now, and record it (synchronous)."""
         if self.skip(tool_name):
-            return Decision(True, "NeuralOps tool (not gated)")
-        detail = json.dumps(dict(args or {}), default=str, ensure_ascii=False)
-        if len(detail) > self.max_detail:
-            detail = detail[: self.max_detail] + "…"
+            return Decision(True, "NeuralOps tool (not gated)", via="ungoverned")
         payload: dict[str, Any] = {
             "action": action or self.action_for(tool_name),
             "scope": scope or self.scope,
-            "target": tool_name[:200],
-            "detail": detail,
+            "target": (target or tool_name)[:200],
         }
+        detail = self._detail(args)
+        if detail and detail != "{}":
+            payload["detail"] = detail
         if task_id or self.task_id:
             payload["taskId"] = task_id or self.task_id
         try:
             status, data = self._post("/api/tools/neuralops_perform", payload)
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            msg = f"NeuralOps core unreachable at {self.url} ({e})"
+        except CoreUnreachable as e:
             if self.fail_open:
-                return Decision(True, msg + " — allowed (fail_open)")
-            return Decision(False, msg + " — tool call blocked (fail closed).")
+                return Decision(True, f"{e} — allowed (fail_open)", via="fail_open")
+            return Decision(False, f"{e} — tool call blocked (fail closed).")
 
         if not data.get("ok"):
             err = str(data.get("error") or f"HTTP {status}")
@@ -146,11 +168,73 @@ class NeuralOpsGuard:
             approval_id=approval.get("id"),
             approver=approval.get("approver"),
             act_id=result.get("actId"),
+            via=result.get("via"),
         )
 
-    async def acheck(self, tool_name: str, args: Mapping[str, Any] | None = None, **kw: Any) -> Decision:
+    async def acheck(self, tool_name: str, args: Mapping[str, Any] | str | None = None, **kw: Any) -> Decision:
         return await asyncio.to_thread(self.check, tool_name, args, **kw)
 
+    # ------------------------------------------------------------------ reads (no side effects)
+    def policy(self, tool_name: str, *, action: str | None = None, scope: str | None = None, task_id: str | None = None) -> dict[str, Any]:
+        """Dry run of perform: governed? approver? authority? usable approval? frozen? Records nothing."""
+        body: dict[str, Any] = {"action": action or self.action_for(tool_name), "scope": scope or self.scope}
+        if task_id or self.task_id:
+            body["taskId"] = task_id or self.task_id
+        status, data = self._post("/api/tools/neuralops_perform_check", body)
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or f"HTTP {status}"))
+        return data["result"]
+
+    async def apolicy(self, tool_name: str, **kw: Any) -> dict[str, Any]:
+        return await asyncio.to_thread(self.policy, tool_name, **kw)
+
+    def approval(self, approval_id: str) -> dict[str, Any] | None:
+        status, data = self._request("GET", f"/api/approvals/{urllib.parse.quote(approval_id)}")
+        return data if status == 200 else None
+
+    async def await_decision(self, approval_id: str, *, timeout: float, poll: float = 1.0) -> tuple[str, dict[str, Any] | None]:
+        """Wait until a person decides. Returns ("approved"|"denied"|"timeout", approval)."""
+        deadline = time.monotonic() + timeout
+        last: dict[str, Any] | None = None
+        while True:
+            try:
+                last = await asyncio.to_thread(self.approval, approval_id)
+            except CoreUnreachable:
+                last = last  # a hiccup is not a decision
+            status = (last or {}).get("status")
+            if status in ("approved", "denied"):
+                return status, last
+            if time.monotonic() >= deadline:
+                return "timeout", last
+            await asyncio.sleep(poll)
+
+    # ------------------------------------------------------------------ records
+    def report_block(self, tool: str, reason: str, *, target: str | None = None, enforcer: str = "guard") -> None:
+        """Record in the ledger that a tool call was stopped (best effort)."""
+        payload: dict[str, Any] = {"enforcer": enforcer, "tool": tool[:100], "reason": reason[:1000]}
+        if target:
+            payload["target"] = target[:500]
+        try:
+            self._post("/api/acts", {"type": "report_block", "payload": payload})
+        except CoreUnreachable:
+            pass
+
+    async def areport_block(self, tool: str, reason: str, **kw: Any) -> None:
+        await asyncio.to_thread(self.report_block, tool, reason, **kw)
+
+    def ensure_identity(self, name: str, *, role: str = "persona", model: str = "Custom") -> str:
+        """Broker mode: make sure `act_as` exists (created on first use, delegated to this broker)."""
+        if not self.act_as:
+            raise ValueError("ensure_identity needs act_as")
+        status, _ = self._request("GET", "/api/whoami")
+        if status == 200:
+            return self.act_as
+        status, data = self._request("POST", "/api/agents", {"id": self.act_as, "name": name[:80], "model": model, "role": role}, as_self=True)
+        if status not in (200, 201) and "already exists" not in str(data.get("error", "")):
+            raise RuntimeError(f"could not register {self.act_as}: {data.get('error') or status}")
+        return self.act_as
+
+    # ------------------------------------------------------------------ what the model sees
     @staticmethod
     def blocked_text(tool_name: str, d: Decision) -> str:
         """What the model sees instead of the tool result. Written so it reports, not retries."""
@@ -162,7 +246,7 @@ class NeuralOpsGuard:
         return f"[NeuralOps] {tool_name} was NOT run: {d.message}"
 
     # ------------------------------------------------------------------ pydantic-ai hook
-    async def process_tool_call(self, ctx: Any, call_tool: Callable[..., Awaitable[Any]], name: str,
+    async def process_tool_call(self, ctx: Any, call_tool: Callable[..., Any], name: str,
                                 tool_args: dict[str, Any]) -> Any:
         """pydantic-ai ``process_tool_call`` callback for MCP toolsets/servers."""
         d = await self.acheck(name, tool_args)

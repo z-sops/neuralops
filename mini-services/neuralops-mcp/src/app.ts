@@ -9,6 +9,7 @@ import { JournalFile, genesis, replay } from './engines/replay.js'
 import { createHttpHandler } from './server/http.js'
 import { setupWebSocket } from './server/ws.js'
 import { setupWebhook } from './server/webhook.js'
+import { startJwks } from './server/jwt.js'
 
 export interface App {
   config: Config
@@ -53,7 +54,8 @@ export function createApp(config: Config): App {
     })
   })
   const ws = setupWebSocket(http, config)
-  const hook = config.webhook ? setupWebhook(config.webhook) : null
+  const hook = config.webhook ? setupWebhook({ ...config.webhook, links: config.links }) : null
+  const stopJwks = config.jwt ? startJwks(config.jwt) : () => {}
 
   return {
     config,
@@ -74,6 +76,7 @@ export function createApp(config: Config): App {
     close() {
       ws.dispose()
       hook?.dispose()
+      stopJwks()
       journal?.detach()
       return new Promise((resolve) => {
         ws.io.close(() => resolve())

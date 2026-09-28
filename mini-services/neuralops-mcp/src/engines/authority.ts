@@ -90,17 +90,24 @@ export function findPendingApproval(
   return null
 }
 
-/** An approved, not yet consumed approval for exactly this request. */
+/** Still usable at `at`: approved, uses left, not expired. */
+export function isUsable(a: Approval, at?: string): boolean {
+  if (a.status !== 'approved' || a.consumedAt !== null) return false
+  if (a.validUntil && at && at > a.validUntil) return false
+  return true
+}
+
+/** An approved, not yet used up, unexpired approval for exactly this request. */
 export function findConsumableApproval(
   requestedBy: string,
   action: string,
   scope: string,
-  taskId: string | null
+  taskId: string | null,
+  at?: string
 ): Approval | null {
   for (const a of store.approvals.values()) {
     if (
-      a.status === 'approved' &&
-      a.consumedAt === null &&
+      isUsable(a, at) &&
       a.requestedBy === requestedBy &&
       a.action === action &&
       a.scope === scope &&
@@ -111,7 +118,17 @@ export function findConsumableApproval(
   return null
 }
 
+/** Use an approval once. Multi-use approvals count down; the last use closes it. */
 export function consumeApproval(a: Approval, actId: string, at: string): void {
+  if (a.usesLeft !== undefined && a.usesLeft > 1) {
+    a.usesLeft -= 1
+    a.usedBy = [...(a.usedBy ?? []), actId]
+    return
+  }
+  if (a.usesLeft !== undefined) {
+    a.usesLeft = 0
+    a.usedBy = [...(a.usedBy ?? []), actId]
+  }
   a.consumedAt = at
   a.consumedBy = actId
 }
@@ -160,7 +177,13 @@ function getPending(approvalId: string): Approval {
   return approval
 }
 
-export function authorize(approvalId: string, decidedBy: string, at: string, reason?: string): Approval {
+export function authorize(
+  approvalId: string,
+  decidedBy: string,
+  at: string,
+  reason?: string,
+  opts: { uses?: number; validForSeconds?: number } = {}
+): Approval {
   const approval = getPending(approvalId)
   if (decidedBy === approval.requestedBy) {
     throw forbidden(`${decidedBy} cannot authorize its own request ${approvalId}`)
@@ -174,6 +197,11 @@ export function authorize(approvalId: string, decidedBy: string, at: string, rea
   approval.decidedBy = decidedBy
   approval.decidedAt = at
   if (reason) approval.reason = reason
+  if (opts.uses && opts.uses > 1) {
+    approval.usesLeft = opts.uses
+    approval.usedBy = []
+  }
+  if (opts.validForSeconds) approval.validUntil = new Date(new Date(at).getTime() + opts.validForSeconds * 1000).toISOString()
   return approval
 }
 
