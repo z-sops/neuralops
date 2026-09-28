@@ -56,3 +56,7 @@ server.log
 mini-services/neuralops-mcp/data/
 .zscripts/*.pid
 !.env.example
+
+# python
+__pycache__/
+*.pyc
