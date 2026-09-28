@@ -1,8 +1,8 @@
 // NeuralOps Coordination Protocol — Act Types
 // Acts mutate state; messages do not become the state.
 //
-// 23 act types in 6 families. V0.1.1 adds `create_task` so real agents can
-// open work through the protocol instead of relying on the demo seed.
+// 25 act types in 6 families. V0.1.1 added `create_task`; V0.1.3 adds
+// `reserve_files` / `release_files` (file reservations).
 
 export type ActFamily =
   | 'task'
@@ -19,6 +19,8 @@ export const ACT_FAMILY = {
   complete: 'task',
   block: 'task',
   status: 'task',
+  reserve_files: 'task',
+  release_files: 'task',
   handoff: 'handoff',
   accept_handoff: 'handoff',
   reject_handoff: 'handoff',
@@ -57,7 +59,7 @@ export const FAMILY_COLOR: Record<ActFamily, string> = {
 }
 
 export const FAMILY_DESCRIPTION: Record<ActFamily, string> = {
-  task: 'Lifecycle mutations on tasks (create, claim, release, complete, block, status)',
+  task: 'Lifecycle mutations on tasks (create, claim, release, complete, block, status) and file reservations',
   handoff: 'Transfer ownership of a task between agents',
   information: 'Record durable facts (evidence, decisions, structured updates)',
   conversation: 'Short, tagged exchanges that expire unless they produce state',
@@ -76,6 +78,9 @@ export const ACT_DESCRIPTION: Record<ActType, string> = {
     'Mark a task you own as complete. If the task (or the declared scope) is gated and you lack direct authority, an approval is requested instead and the task stays open. Retry after the approver authorizes.',
   block: 'Mark a task you own as blocked, with a reason.',
   status: 'Report progress (0-100) on a task you own, with optional ETA and note.',
+  reserve_files:
+    'Reserve repo-relative files/globs before editing them (e.g. ["src/auth/**", "package.json"]). Exclusive by default: other agents cannot reserve, edit (Claude Code hook) or commit (git pre-commit hook) overlapping files until you release them or the TTL (default 1h) ends. Re-reserving the same patterns renews the TTL. Released automatically when the task completes or is released; moves to the new owner on handoff.',
+  release_files: 'Release your file reservations: one by reservationId, all for a taskId, or all=true. Managers/governors can force-release a stale reservation by id.',
   handoff: 'Offer a task you own to another agent with an intent (implement / review / test). Ownership moves only when they accept.',
   accept_handoff: 'Accept a handoff offered to you. You become the owner.',
   reject_handoff: 'Reject a handoff offered to you. The task returns to its previous status with the original owner.',

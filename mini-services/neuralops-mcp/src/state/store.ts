@@ -18,6 +18,7 @@ import type {
   Policy,
   Proposal,
   Question,
+  Reservation,
   Task,
   Workspace,
 } from './types.js'
@@ -60,6 +61,7 @@ interface StoreData {
   questions: Map<string, Question>
   proposals: Map<string, Proposal>
   policies: Map<string, Policy>
+  reservations: Map<string, Reservation>
   tokenHashes: Map<string, TokenInfo> // sha256(token) → agent + expiry
   ledger: LedgerEvent[]
   acts: Map<string, Act>
@@ -79,6 +81,7 @@ function emptyData(): StoreData {
     questions: new Map(),
     proposals: new Map(),
     policies: new Map(),
+    reservations: new Map(),
     tokenHashes: new Map(),
     ledger: [],
     acts: new Map(),
@@ -105,6 +108,7 @@ export class Store {
   get questions() { return this.d.questions }
   get proposals() { return this.d.proposals }
   get policies() { return this.d.policies }
+  get reservations() { return this.d.reservations }
   get tokenHashes() { return this.d.tokenHashes }
   get ledger(): readonly LedgerEvent[] { return this.d.ledger }
   get acts() { return this.d.acts }
@@ -244,6 +248,7 @@ export class Store {
       questions: [...this.d.questions.values()],
       proposals: [...this.d.proposals.values()],
       policies: [...this.d.policies.values()],
+      reservations: [...this.d.reservations.values()],
       tokenHashes: [...this.d.tokenHashes.entries()],
       ledgerHead: this.ledgerHead,
       counters: this.d.counters,

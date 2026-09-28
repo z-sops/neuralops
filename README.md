@@ -9,12 +9,13 @@ Codex CLI   ─┼─ MCP stdio ─► Coordination Core ─┤
 Gemini CLI  ─┘               :3031              └─ gate-check (CI) · PreToolUse hook
 ```
 
-- **23 typed acts** in 6 families: create/claim/handoff/complete, decisions and evidence, questions/proposals with TTL, approvals and escalation
+- **25 typed acts** in 6 families: create/claim/handoff/complete, file reservations, decisions and evidence, questions/proposals with TTL, approvals and escalation
+- **File reservations**: agents reserve files/globs; other agents can't edit (Claude Code hook) or commit (git pre-commit, works for every agent) what someone else holds
 - **Authority**: direct grants, workspace policies, task gates, approver chain, veto; approvals are single-use, task-bound, and never self-approved
 - **Verified evidence**: only CI (or another `attest` agent) can satisfy gates like "tests must pass"
 - **Event-sourced**: HMAC-signed journal, hash-chained ledger, replay on boot, `/api/integrity`
 - **Secure mode**: bearer tokens with expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
-- **101 automated tests**
+- **122 automated tests**
 
 ## Quick start (local demo)
 
@@ -24,7 +25,7 @@ Requires [Bun](https://bun.sh) and [Caddy](https://caddyserver.com/download).
 # 1. core
 cd mini-services/neuralops-mcp
 bun install
-bun test            # 101 pass
+bun test            # 122 pass
 bun run dev         # 127.0.0.1:3031
 
 # 2. dashboard (new terminal, repo root)
@@ -48,6 +49,7 @@ claude mcp add neuralops \
 
 Enforcement outside the model:
 - Claude Code hook: `mini-services/neuralops-mcp/integrations/claude-code/settings.example.json`
+- git pre-commit (any agent): `bun run install-git-hook -- --repo <worktree> --token <agent token>` (in `mini-services/neuralops-mcp`)
 - GitHub required check: `mini-services/neuralops-mcp/integrations/github/neuralops-gate.yml`
 
 ## Production-ish (secure mode)
@@ -63,8 +65,8 @@ Register agents with `POST /api/agents` (admin token). Tokens are shown once.
 
 ## Docs
 
-`download/NeuralOps-MCP/`: start with `README.md`. What changed: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`.
+`download/NeuralOps-MCP/`: start with `README.md`. What changed: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`.
 
 ## Status
 
-V0.1.2. Single workspace, single process (JSONL journal). See `12-Real-vs-Demo.md` for the honest list of what is and is not done.
+V0.1.3. Single workspace, single process (JSONL journal). See `12-Real-vs-Demo.md` for the honest list of what is and is not done.

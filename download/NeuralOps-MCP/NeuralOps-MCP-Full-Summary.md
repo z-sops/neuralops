@@ -1,7 +1,7 @@
 # NeuralOps MCP — Mukammal Product Summary
 
 > **AI Workforce Coordination Protocol**
-> V0.1.2 — Security build. Kya badla: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`
+> V0.1.3 — File reservations. Kya badla: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`
 
 ---
 
@@ -169,13 +169,15 @@ Agent sirf "complete task 42" bolta hai. NeuralOps internally:
 
 **Important:** `payload` deliberately small hai. Rich state Coordination Core mein rehta hai.
 
-## 4.3 6 Act Families — 23 Act Types
+## 4.3 6 Act Families — 25 Act Types
 
 ### Family 1: TASK (emerald) — Lifecycle mutations
 
 | Act | Purpose | Payload |
 |-----|---------|---------|
 | `create_task` | Open a task (V0.1.1) | `{id?, title, objective, constraints?, openItems?, nextSteps?, gates?}` |
+| `reserve_files` | Reserve files/globs (V0.1.3) | `{patterns[], taskId?, ttlSeconds?, exclusive?, reason?}` |
+| `release_files` | Release reservations (V0.1.3) | `{reservationId? \| taskId? \| all?}` |
 | `claim` | Agent takes ownership | `{taskId, note?}` |
 | `release` | Agent gives up task | `{taskId, reason}` |
 | `complete` | Mark complete (may trigger approval) | `{taskId, summary, resultRef?, evidence?[]}` |
@@ -431,10 +433,10 @@ NeuralOps ke saath — compacted context:
 
 # BHAAG 7: MCP TOOL REGISTRY
 
-## 7.1 34 tools
+## 7.1 38 tools
 
-- **11 query tools:** `neuralops_inbox` (pehle yahi), `gate_status`, `get_task_context`, `get_full_context`, `get_evidence`, `get_decision`, `get_original_context`, `whoami`, `workspace`, `tasks`, `register`
-- **23 act tools:** `neuralops_<act>` har act type ke liye; optional `references[]` aur `actId` (idempotency)
+- **13 query tools:** `neuralops_inbox` (pehle yahi), `gate_status`, `files_check`, `reservations`, `get_task_context`, `get_full_context`, `get_evidence`, `get_decision`, `get_original_context`, `whoami`, `workspace`, `tasks`, `register`
+- **25 act tools:** `neuralops_<act>` har act type ke liye; optional `references[]` aur `actId` (idempotency)
 - Act tool schemas usi zod schema se generate hote hain jis se dispatcher validate karta hai, is liye drift nahi hota
 
 ## 7.2 Critical design choice
@@ -607,7 +609,8 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 - ✅ Bearer-token identity + secure mode
 - ✅ Persistence: JSONL journal + replay on restart
 - ✅ Hash-chained ledger + `/api/integrity`
-- ✅ Real MCP stdio transport, 34 tools
+- ✅ Real MCP stdio transport, 38 tools
+- ✅ V0.1.3: file reservations (reserve-time conflicts, Claude Code hook on edits, git pre-commit for every agent)
 - ✅ V0.1.2: gateway locked, loopback default, signed journal, token lifecycle, admin API, verified CI evidence, injection guard, rate limit
 - ✅ Context compaction (estimate, labelled)
 - ✅ Dashboard: browser-tested golden path
@@ -666,7 +669,7 @@ cd /home/z/my-project/mini-services/neuralops-mcp && setsid --fork bash -c 'exec
 |-------|--------|
 | Backend + frontend `tsc` | ✅ 0 errors (V0.1: 26) |
 | `eslint .` | ✅ 0 errors (V0.1: 7, although docs said 0) |
-| `bun test` | ✅ 101 pass / 0 fail |
+| `bun test` | ✅ 122 pass / 0 fail |
 | `next build` | ✅ 0 warnings |
 | Browser golden path | ✅ 10/10 |
 | MCP stdio, 2 agents | ✅ |
@@ -761,7 +764,7 @@ src/
 
 # FINAL ONE-LINER
 
-> **NeuralOps MCP V0.1.2 = a working coordination protocol for AI workers, enforced outside the model (Claude Code hook + GitHub required check): 23 typed acts, a hash-chained ledger backed by a replayable journal, an authority engine with single-use approvals that agents cannot self-grant, a real MCP stdio server with 33 tools, and context compaction (~70–81% on the demo, estimated), covered by 101 automated tests and a browser-tested golden path.**
+> **NeuralOps MCP V0.1.2 = a working coordination protocol for AI workers, enforced outside the model (Claude Code hook + GitHub required check): 25 typed acts (incl. file reservations), a hash-chained ledger backed by a replayable journal, an authority engine with single-use approvals that agents cannot self-grant, a real MCP stdio server with 33 tools, and context compaction (~70–81% on the demo, estimated), covered by 122 automated tests and a browser-tested golden path.**
 
 ---
 

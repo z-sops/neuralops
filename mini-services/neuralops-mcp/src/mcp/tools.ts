@@ -20,6 +20,7 @@ import {
 } from '../engines/context.js'
 import { registerAgent, RegisterSchema } from '../engines/agents.js'
 import { gateStatus } from '../engines/gate.js'
+import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { store } from '../state/store.js'
 import { ACT_DESCRIPTION, ACT_FAMILY, ACT_TYPES, FAMILY_DESCRIPTION, isActType } from '../protocol/act-types.js'
 import { PAYLOAD_SCHEMAS } from '../protocol/payloads.js'
@@ -85,6 +86,13 @@ const QUERY_SCHEMAS = {
   neuralops_get_evidence: z.object({ evidenceId: z.string() }),
   neuralops_get_decision: z.object({ decisionId: z.string() }),
   neuralops_get_original_context: z.object({ actId: z.string() }),
+  neuralops_files_check: z.object({
+    paths: z.array(z.string()).min(1).max(200).describe('Repo-relative file paths you are about to edit'),
+  }),
+  neuralops_reservations: z.object({
+    agentId: z.string().optional(),
+    taskId: z.string().optional(),
+  }),
   neuralops_gate_status: z.object({
     taskId: z.string(),
     action: z.string().optional().describe('default "complete"; e.g. "deploy"'),
@@ -108,6 +116,9 @@ const QUERY_DESCRIPTIONS: Record<QueryTool, string> = {
   neuralops_get_evidence: 'Fetch one evidence record by id.',
   neuralops_get_decision: 'Fetch one decision record by id.',
   neuralops_get_original_context: 'Fetch the original act envelope by act id.',
+  neuralops_files_check:
+    'Before editing, check who holds these files. blocked=true means another agent holds an exclusive reservation: do not edit; ask them or pick other work. mine=true means you already hold it.',
+  neuralops_reservations: 'List active file reservations (optionally for one agent or task).',
   neuralops_gate_status:
     'Ask whether an action (merge = "complete", or e.g. "deploy") is cleared for a task and scope. CI and hooks enforce exactly this answer, so check it before pushing or deploying.',
 }
@@ -187,6 +198,14 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         return { ok: true, result: getDecisionById(parseArgs(name, args).decisionId) }
       case 'neuralops_get_original_context':
         return { ok: true, result: getOriginalContext(parseArgs(name, args).actId) }
+      case 'neuralops_files_check': {
+        const a = parseArgs(name, args)
+        return { ok: true, result: checkPaths(caller.agentId, a.paths) }
+      }
+      case 'neuralops_reservations': {
+        const a = parseArgs(name, args)
+        return { ok: true, result: activeReservations().filter((r) => (!a.agentId || r.agentId === a.agentId) && (!a.taskId || r.taskId === a.taskId)) }
+      }
       case 'neuralops_gate_status': {
         const a = parseArgs(name, args)
         return { ok: true, result: gateStatus(a.taskId, a.action ?? 'complete', a.scope ?? 'production') }
@@ -227,6 +246,7 @@ function actToolResult(res: ActResult): ToolResult {
       message: res.message,
       approval: res.approval,
       task: res.task,
+      reservation: res.reservation,
       ledgerEvent: res.ledgerEvent
         ? { seq: res.ledgerEvent.seq, deltaSummary: res.ledgerEvent.deltaSummary, hash: res.ledgerEvent.hash }
         : null,

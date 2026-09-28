@@ -138,6 +138,22 @@ export interface Evidence {
   verifiedBy: string | null
 }
 
+/** A TTL'd claim on repo-relative path patterns (see engines/reservations.ts). */
+export interface Reservation {
+  id: string
+  workspaceId: string
+  agentId: string
+  taskId: string | null
+  patterns: string[]
+  exclusive: boolean
+  reason: string | null
+  createdAt: string
+  expiresAt: string
+  releasedAt: string | null
+  releasedBy: string | null
+  releaseReason: string | null
+}
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied'
 
 export interface Approval {

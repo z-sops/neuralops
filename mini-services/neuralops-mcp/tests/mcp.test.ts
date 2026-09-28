@@ -43,9 +43,9 @@ describe('MCP stdio transport', () => {
     await app.close()
   })
 
-  test('lists all 34 tools with JSON schemas', async () => {
+  test('lists all 38 tools with JSON schemas', async () => {
     const { tools } = await backend.listTools()
-    expect(tools).toHaveLength(34)
+    expect(tools).toHaveLength(38)
     const complete = tools.find((t) => t.name === 'neuralops_complete')!
     expect(complete.inputSchema.required).toEqual(expect.arrayContaining(['taskId', 'summary']))
   })

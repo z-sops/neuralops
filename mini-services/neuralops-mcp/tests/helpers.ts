@@ -3,7 +3,8 @@ import { genesis } from '../src/engines/replay.js'
 import { processAct, type ActResult } from '../src/engines/task-manager.js'
 import type { ActType } from '../src/protocol/act-types.js'
 
-export const SEEDED_AT = '2026-09-27T12:00:00.000Z'
+// Seed now so time-based state (e.g. the seeded 8h file reservation) is live during the run.
+export const SEEDED_AT = new Date().toISOString()
 
 export function freshDemo(): void {
   genesis('demo', SEEDED_AT)

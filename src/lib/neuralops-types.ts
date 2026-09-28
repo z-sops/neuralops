@@ -105,6 +105,21 @@ export interface Task {
   updatedAt: string
 }
 
+export interface Reservation {
+  id: string
+  workspaceId: string
+  agentId: string
+  taskId: string | null
+  patterns: string[]
+  exclusive: boolean
+  reason: string | null
+  createdAt: string
+  expiresAt: string
+  releasedAt: string | null
+  releasedBy: string | null
+  releaseReason: string | null
+}
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied'
 
 export interface Approval {
@@ -137,6 +152,7 @@ export type ActFamily =
 export type ActType =
   | 'create_task'
   | 'claim' | 'release' | 'complete' | 'block' | 'status'
+  | 'reserve_files' | 'release_files'
   | 'handoff' | 'accept_handoff' | 'reject_handoff'
   | 'evidence' | 'decision' | 'update'
   | 'question' | 'answer' | 'proposal' | 'counter'
@@ -179,6 +195,7 @@ export interface NeuralOpsState {
   ledger: LedgerEvent[]
   ledgerTotal: number
   policies?: Policy[]
+  reservations?: Reservation[]
   ledgerHead?: string
 }
 
@@ -234,6 +251,7 @@ export const FAMILY_HUE: Record<ActFamily, string> = {
 // Static act → family map (fallback if /api/families hasn't loaded yet).
 export const ACT_FAMILY_STATIC: Record<ActType, ActFamily> = {
   create_task: 'task', claim: 'task', release: 'task', complete: 'task', block: 'task', status: 'task',
+  reserve_files: 'task', release_files: 'task',
   handoff: 'handoff', accept_handoff: 'handoff', reject_handoff: 'handoff',
   evidence: 'information', decision: 'information', update: 'information',
   question: 'conversation', answer: 'conversation', proposal: 'conversation', counter: 'conversation',

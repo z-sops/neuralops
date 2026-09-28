@@ -89,6 +89,13 @@ export function applyAdmin(rec: AdminRecord): void {
       for (const [h, info] of store.tokenHashes) if (info.agentId === rec.agentId) store.tokenHashes.delete(h)
       agent.revokedAt = rec.at
       agent.status = 'offline'
+      for (const r of store.reservations.values()) {
+        if (r.agentId === rec.agentId && !r.releasedAt) {
+          r.releasedAt = rec.at
+          r.releasedBy = rec.by
+          r.releaseReason = 'agent revoked'
+        }
+      }
       audit(rec, { revokedAt: null }, { revokedAt: rec.at }, `${rec.by} REVOKED ${rec.agentId} — all its tokens are invalid`)
       break
     }

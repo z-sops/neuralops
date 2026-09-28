@@ -52,9 +52,9 @@ describe('demo mode', () => {
     expect((await call(base, 'GET', '/api/nope')).status).toBe(404)
   })
 
-  test('tools: 34 listed, act tools need an identity, errors carry codes', async () => {
+  test('tools: 38 listed, act tools need an identity, errors carry codes', async () => {
     const tools = await call(base, 'GET', '/api/tools')
-    expect(tools.data).toHaveLength(34)
+    expect(tools.data).toHaveLength(38)
     const anon = await call(base, 'POST', '/api/tools/neuralops_claim', { taskId: 'task_44' })
     expect(anon.status).toBe(403)
     const inbox = await call(base, 'POST', '/api/tools/neuralops_inbox', {}, { 'X-Agent-Id': 'agent.qa' })
@@ -79,7 +79,7 @@ describe('demo mode', () => {
     // Wait for the snapshot that reflects the reseed (earlier coalesced snapshots may still arrive first).
     const reseeded = new Promise<{ ledgerTotal: number }>((res) => {
       const onSnap = (s: { ledgerTotal: number; tasks: Array<{ id: string }> }) => {
-        if (s.ledgerTotal === 6) {
+        if (s.ledgerTotal === 7) {
           socket.off('state:snapshot', onSnap)
           res(s)
         }
@@ -87,7 +87,7 @@ describe('demo mode', () => {
       socket.on('state:snapshot', onSnap)
     })
     await call(base, 'POST', '/api/demo/seed')
-    expect((await reseeded).ledgerTotal).toBe(6)
+    expect((await reseeded).ledgerTotal).toBe(7)
     socket.disconnect()
   })
 })

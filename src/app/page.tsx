@@ -112,6 +112,7 @@ export default function Page() {
                 agents={state.agents}
                 tasks={state.tasks}
                 approvals={state.approvals}
+                reservations={state.reservations ?? []}
                 lastResult={lastResult}
                 lastResultAt={lastResultAt}
                 submitAct={submitAct}

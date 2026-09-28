@@ -1,9 +1,26 @@
 // Shared helpers for the NeuralOps CLIs and hooks (run outside the core).
 
 import { execSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-export const BASE = (process.env.NEURALOPS_URL || 'http://127.0.0.1:3031').replace(/\/$/, '')
-export const TOKEN = process.env.NEURALOPS_TOKEN || ''
+/** Per-worktree git dir (where install-git-hook stores this agent's token/url). */
+export function gitDir(): string | null {
+  try {
+    return execSync('git rev-parse --absolute-git-dir', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || null
+  } catch {
+    return null
+  }
+}
+
+function fromGitDir(name: string): string {
+  const dir = gitDir()
+  const p = dir ? join(dir, name) : null
+  return p && existsSync(p) ? readFileSync(p, 'utf8').trim() : ''
+}
+
+export const BASE = (process.env.NEURALOPS_URL || fromGitDir('neuralops-url') || 'http://127.0.0.1:3031').replace(/\/$/, '')
+export const TOKEN = process.env.NEURALOPS_TOKEN || fromGitDir('neuralops-token')
 
 export async function call<T = unknown>(
   method: 'GET' | 'POST',

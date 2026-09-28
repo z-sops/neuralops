@@ -15,6 +15,7 @@ import { estimateTokens, formatTokens, TOKEN_METHOD } from '../state/token-estim
 import { isExpired } from './task-manager.js'
 import { notFound } from '../errors.js'
 import { UNTRUSTED_NOTICE, untrusted } from './guard.js'
+import { activeReservations } from './reservations.js'
 
 export interface CompactedContext {
   taskId: string
@@ -28,6 +29,7 @@ export interface CompactedContext {
   next: string[]
   gates: string[]
   clearances: string[]
+  files: string[]
   owner: string | null
   status: string
   tokens: number
@@ -118,6 +120,9 @@ export function getCompactedContext(taskId: string): CompactedContext {
     open,
     next,
     gates: task.gates.map((g) => `${g.action}/${g.scope}${g.requireVerified?.length ? ` (needs verified: ${g.requireVerified.join(', ')})` : ''}`),
+    files: activeReservations(now)
+      .filter((r) => r.taskId === taskId)
+      .map((r) => `${r.patterns.join(', ')} — ${r.exclusive ? 'exclusive' : 'shared'} by ${r.agentId} until ${r.expiresAt} [${r.id}]`),
     clearances: (task.clearances ?? []).map((c) => `${c.action}/${c.scope} cleared via ${c.via}${c.approvalId ? ` ${c.approvalId}` : ''} by ${c.by}`),
     owner: task.assignee,
     status: task.status,
@@ -194,6 +199,7 @@ export function formatCompactedContext(c: CompactedContext): string {
   section(lines, 'NEXT', c.next, '(none)')
   if (c.gates.length) section(lines, 'GATES', c.gates, '')
   if (c.clearances.length) section(lines, 'CLEARED', c.clearances, '')
+  if (c.files.length) section(lines, 'FILES RESERVED', c.files, '')
   lines.push(`OWNER: ${c.owner || '(unclaimed)'}   STATUS: ${c.status}`)
   return lines.join('\n')
 }
@@ -253,6 +259,9 @@ export function getInbox(agentId: string) {
     questions: [...store.questions.values()]
       .filter((q) => forMe(q.to) && exchangeStatus(q, now) === 'open')
       .map((q) => ({ id: q.id, from: q.from, about: untrusted(q.about), taskId: q.taskId, expiresAt: q.expiresAt })),
+    myReservations: activeReservations(now)
+      .filter((r) => r.agentId === agentId)
+      .map((r) => ({ id: r.id, patterns: r.patterns, taskId: r.taskId, exclusive: r.exclusive, expiresAt: r.expiresAt })),
     proposals: [...store.proposals.values()]
       .filter((p) => forMe(p.to) && exchangeStatus(p, now) === 'open')
       .map((p) => ({ id: p.id, from: p.from, what: untrusted(p.what), why: untrusted(p.why), taskId: p.taskId, expiresAt: p.expiresAt })),

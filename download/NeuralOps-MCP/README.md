@@ -1,7 +1,7 @@
 # NeuralOps MCP — Product Documentation Package
 
 > **AI Workforce Coordination Protocol**
-> V0.1.2 — Security build (see `17-V0.1.1-Hardening.md` and `18-V0.1.2-Security.md`)
+> V0.1.3 — File reservations (see `17-…`, `18-…`, `19-V0.1.3-File-Reservations.md`)
 
 ---
 
@@ -22,7 +22,7 @@ NeuralOps-MCP/
 ├── 04-Coordination-Protocol.md            ← act envelope, 23 acts, 6 families
 ├── 05-State-Layer.md                      ← entities, ledger, design principle
 ├── 06-Engines.md                          ← task-manager, authority, context
-├── 07-MCP-Tools.md                        ← 34 tools, real MCP stdio transport
+├── 07-MCP-Tools.md                        ← 38 tools, real MCP stdio transport
 ├── 08-API-Reference.md                    ← REST + WebSocket full reference
 ├── 09-Demo-Seed.md                        ← Engineering workspace scenario
 ├── 10-Protocol-Inspector.md               ← dashboard sections + tech stack
@@ -33,7 +33,8 @@ NeuralOps-MCP/
 ├── 15-Design-Principles.md               ← 10 core principles
 ├── 16-Files-Index.md                      ← sab files ka index
 ├── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, MCP setup, tests
-└── 18-V0.1.2-Security.md                  ← V0.1.2: gateway, signed journal, tokens, CI/hook enforcement
+├── 18-V0.1.2-Security.md                  ← V0.1.2: gateway, signed journal, tokens, CI/hook enforcement
+└── 19-V0.1.3-File-Reservations.md         ← V0.1.3: file reservations + git pre-commit for every agent
 ```
 
 ## Kaise read karein
@@ -49,7 +50,7 @@ NeuralOps-MCP/
 
 NeuralOps MCP ek **coordination layer** hai jo customer ke existing AI agents (Claude, Codex, Gemini, Qwen) ke beech baith ke unhe organize karta hai. Yeh agents ko replace nahi karta — unhe ek shared workplace deta hai jahan:
 
-1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval — 23 types total)
+1. **Typed acts** se communicate karte hain (claim, handoff, complete, decision, evidence, approval, file reservation — 25 types total)
 2. **Immutable ledger** mein har kaam record hota hai with before→after deltas
 3. **Authority engine** enforce karta hai kaun kya kar sakta hai (production deploy ke liye approval chahiye)
 4. **Context compaction**: agent ko poori history ki bajaye chhota structured snapshot milta hai — demo pe **~70–81% kam tokens** (chars/4 estimate)
@@ -63,7 +64,8 @@ Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, 
 - ✅ Enforcement outside the model: Claude Code hook + GitHub required check + verified CI evidence
 - ✅ Signed journal, token expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
 - ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
-- ✅ 101 automated tests; tsc + lint clean (frontend + backend)
+- ✅ File reservations: conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits
+- ✅ 122 automated tests; tsc + lint clean (frontend + backend)
 - 📋 Next: multi-workspace, DB-backed journal, hooks for Codex/Gemini CLI
 
 ---

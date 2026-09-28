@@ -238,3 +238,18 @@ Work Log:
 - Untracked .env and .zscripts/dev.pid; added .env.example and a root README for the public repo.
 
 Verification: 101 tests (7 files) pass; backend + frontend tsc clean.
+
+---
+Task ID: 11 (V0.1.3 file reservations)
+Agent: Claude
+Task: Add file reservations (the main gap vs. MCP Agent Mail) with enforcement for every agent.
+
+Work Log:
+- Acts reserve_files / release_files (25 acts); glob matching + conservative overlap (engines/paths.ts); exclusive/shared, TTL, renew, holder/manager/governor release.
+- Lifecycle: auto-release on task complete/release, transfer to the new owner on handoff accept, release on agent revoke; replayable.
+- Enforcement: reserve-time conflicts; Claude Code hook checks the edited file (optional strict mode requires own reservation); git pre-commit hook + installer (token stored inside .git) so Codex/Gemini/humans are covered.
+- API/tools: GET /api/reservations, GET|POST /api/reservations/check, neuralops_files_check, neuralops_reservations (38 tools); FILES RESERVED in compacted context; myReservations in inbox.
+- Dashboard: File Reservations panel + 2 scenarios; seed gives backend api-gateway/src/auth/** for 8h.
+- Tests: reservations.test.ts (21) incl. a real git repo commit block and the Claude hook; helper seeds at "now" so time-based state is live.
+
+Verification: 122 tests pass; backend + frontend tsc and lint clean; browser via real Caddy: new scenarios + golden path 10/10.

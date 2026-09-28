@@ -199,6 +199,24 @@ export function applyDemoSeed(seededAt: string): void {
   history('evidence', 'agent.backend', 'task_42', `backend impl complete [${evidenceIds[0]}]`, iso(120))
   history('status', 'agent.backend', 'task_42', `tests passing [${evidenceIds[1]}], ready for security review`, iso(40))
 
+  // Backend holds the auth module files while it works on task_42.
+  const resId = store.nextId('reservation')
+  store.reservations.set(resId, {
+    id: resId,
+    workspaceId: ws.id,
+    agentId: 'agent.backend',
+    taskId: 'task_42',
+    patterns: ['api-gateway/src/auth/**'],
+    exclusive: true,
+    reason: 'implementing session auth',
+    createdAt: iso(300),
+    expiresAt: iso(-8 * 60), // 8 hours after seeding
+    releasedAt: null,
+    releasedBy: null,
+    releaseReason: null,
+  })
+  history('reserve_files', 'agent.backend', 'task_42', `reserved api-gateway/src/auth/** (exclusive) [${resId}]`, iso(300))
+
   // --- task 43: security review ---
   store.tasks.set(
     'task_43',

@@ -7,7 +7,9 @@
 //
 // Rules
 //   Edit / Write / MultiEdit / NotebookEdit
-//       → this agent must own an in-progress NeuralOps task (claim one first).
+//       → this agent must own an in-progress NeuralOps task (claim one first),
+//         and the file must not be exclusively reserved by another agent.
+//         NEURALOPS_REQUIRE_RESERVATION=1 → the agent must hold a reservation itself.
 //   Bash: git push to main/master (or while on main/master)
 //       → gate complete/<scope> must be cleared for the task.
 //   Bash: other git push
@@ -20,11 +22,43 @@
 //      NEURALOPS_HOOK_STRICT=1 → also block edits when the core is unreachable
 //      (push/deploy are always blocked when the core is unreachable).
 
+import { isAbsolute, relative, resolve } from 'node:path'
+import { execSync } from 'node:child_process'
 import { call, currentBranch, findTaskId } from '../cli/client.js'
 
 interface HookInput {
   tool_name?: string
-  tool_input?: { command?: string; file_path?: string }
+  cwd?: string
+  tool_input?: { command?: string; file_path?: string; notebook_path?: string }
+}
+
+/** Repo-relative path of the edited file, or null if it is outside the repo. */
+function repoRelative(file: string, cwd: string | undefined): string | null {
+  let root = process.env.CLAUDE_PROJECT_DIR || ''
+  if (!root) {
+    try {
+      root = execSync('git rev-parse --show-toplevel', { cwd: cwd || process.cwd(), stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+    } catch {
+      root = cwd || process.cwd()
+    }
+  }
+  const abs = isAbsolute(file) ? file : resolve(cwd || root, file)
+  const rel = relative(root, abs).replace(/\\/g, '/')
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
+  return rel
+}
+
+interface PathCheck {
+  path: string
+  blocked: boolean
+  mine: boolean
+  heldBy: { reservationId: string; agentId: string; exclusive: boolean; expiresAt: string; taskId: string | null }[]
+}
+
+async function checkFile(rel: string): Promise<PathCheck> {
+  const { status, data } = await call<{ results?: PathCheck[]; error?: string }>('POST', '/api/reservations/check', { paths: [rel] })
+  if (status !== 200 || !data.results) throw new Error(data.error ?? `HTTP ${status}`)
+  return data.results[0]
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -103,6 +137,18 @@ async function main(): Promise<void> {
     const own = await ownsActiveTask()
     if (!own.ok) {
       block('you do not own an in-progress NeuralOps task. Call neuralops_inbox, then neuralops_claim a task before editing files.')
+    }
+    const file = input.tool_input?.file_path ?? input.tool_input?.notebook_path
+    const rel = file ? repoRelative(file, input.cwd) : null
+    if (rel) {
+      const c = await checkFile(rel)
+      if (c.blocked) {
+        const h = c.heldBy.find((x) => x.exclusive) ?? c.heldBy[0]
+        block(`${rel} is reserved by ${h.agentId} [${h.reservationId}${h.taskId ? `, ${h.taskId}` : ''}] until ${h.expiresAt}. Pick other files, ask them (neuralops_question), or wait.`)
+      }
+      if (!c.mine && process.env.NEURALOPS_REQUIRE_RESERVATION === '1') {
+        block(`reserve ${rel} first (neuralops_reserve_files with your taskId).`)
+      }
     }
   } catch (e) {
     const msg = `NeuralOps core unreachable at ${process.env.NEURALOPS_URL || 'http://127.0.0.1:3031'} (${(e as Error).message})`

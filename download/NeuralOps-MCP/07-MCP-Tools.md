@@ -2,9 +2,9 @@
 
 > V0.1.2: 34 tools (naya: `neuralops_gate_status`), asli MCP stdio transport. Tafseel: `17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`.
 
-## 7.1 Tool surface (34 tools)
+## 7.1 Tool surface (38 tools)
 
-### Query tools (11)
+### Query tools (13)
 
 | Tool | Kaam |
 |------|------|
@@ -18,15 +18,17 @@
 | `neuralops_workspace` | Agents, tasks, pending approvals, policies |
 | `neuralops_tasks` | Tasks list (optional status filter) |
 | `neuralops_register` | Naya agent register (admin only), token ek dafa milta hai |
+| `neuralops_files_check` | Edit se pehle: yeh files kiske paas hain? `blocked=true` = kisi aur ki exclusive reservation |
+| `neuralops_reservations` | Active file reservations (agent/task filter) |
 | `neuralops_gate_status` | Kya is task ke liye merge (`complete`) ya `deploy` cleared hai? CI aur hooks yahi jawab enforce karte hain |
 
-### Act tools (23): one per act type
+### Act tools (25): one per act type
 
 `neuralops_<act>`:
 
 | Family | Tools |
 |--------|-------|
-| task | `create_task`, `claim`, `release`, `complete`, `block`, `status` |
+| task | `create_task`, `claim`, `release`, `complete`, `block`, `status`, `reserve_files`, `release_files` |
 | handoff | `handoff`, `accept_handoff`, `reject_handoff` |
 | information | `evidence`, `decision`, `update` |
 | conversation | `question`, `answer`, `proposal`, `counter` |

@@ -14,7 +14,7 @@ const config = loadConfig()
 const app = createApp(config)
 const port = await app.listen()
 
-console.log(`NeuralOps MCP — Coordination Core v0.1.2`)
+console.log(`NeuralOps MCP — Coordination Core v0.1.3`)
 console.log(`  mode      : ${config.mode}`)
 console.log(`  http+ws   : ${config.host}:${port}${config.host.startsWith('127.') || config.host === 'localhost' || config.host === '::1' ? ' (this machine only)' : ' (NETWORK-VISIBLE)'}`)
 console.log(`  journal   : ${app.journal ? app.journal.path : 'off (in-memory)'}${app.restored ? ' (restored' + (app.migrated ? ', migrated to signed format' : '') + ')' : ''}${app.journal ? ', HMAC-signed' : ''}`)

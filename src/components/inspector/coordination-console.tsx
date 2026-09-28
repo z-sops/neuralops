@@ -6,6 +6,7 @@ import {
   CheckCircle2Icon,
   ChevronRightIcon,
   ClockIcon,
+  LockIcon,
   Loader2Icon,
   ShieldAlertIcon,
   ShieldCheckIcon,
@@ -21,6 +22,7 @@ import type {
   ActType,
   Agent,
   Approval,
+  Reservation,
   Task,
 } from '@/lib/neuralops-types'
 import { hue, type Hue } from './colors'
@@ -37,6 +39,8 @@ export type ScenarioId =
   | 'security_complete_42_deploy_approved'
   | 'qa_escalate_44_to_architect'
   | 'architect_decide_42'
+  | 'qa_reserve_auth_conflict'
+  | 'backend_release_auth'
 
 interface ScenarioDef {
   id: ScenarioId
@@ -44,7 +48,7 @@ interface ScenarioDef {
   label: string
   summary: string
   payload: string // monospace payload preview
-  enabled: (state: { tasks: Task[]; approvals: Approval[] }) => boolean
+  enabled: (state: { tasks: Task[]; approvals: Approval[]; reservations: Reservation[] }) => boolean
   hint?: string
 }
 
@@ -175,6 +179,25 @@ const SCENARIOS: ScenarioDef[] = [
     enabled: ({ tasks }) => !!tasks.find((x) => x.id === 'task_42'),
     hint: 'task_42 must exist',
   },
+  {
+    id: 'qa_reserve_auth_conflict',
+    family: 'task',
+    label: 'QA → reserve auth files [blocked: someone holds them]',
+    summary: 'file reservations: QA tries to reserve files another agent holds exclusively → conflict names the holder.',
+    payload: 'reserve_files { patterns: ["api-gateway/src/auth/**"] }  // from: agent.qa',
+    enabled: ({ reservations }) =>
+      reservations.some((r) => r.exclusive && r.agentId !== 'agent.qa' && r.patterns.some((p) => p.startsWith('api-gateway/src/auth'))),
+    hint: 'someone must hold the auth files',
+  },
+  {
+    id: 'backend_release_auth',
+    family: 'task',
+    label: 'Backend → release its auth-file reservation',
+    summary: 'the holder frees its files (completing or releasing the task does this automatically).',
+    payload: 'release_files { taskId: "task_42" }  // from: agent.backend',
+    enabled: ({ reservations }) => reservations.some((r) => r.agentId === 'agent.backend' && r.taskId === 'task_42'),
+    hint: 'backend must hold a task_42 reservation',
+  },
 ]
 
 const FAMILY_HUE: Record<ScenarioDef['family'], Hue> = {
@@ -206,6 +229,7 @@ interface CoordinationConsoleInnerProps {
   agents: Agent[]
   tasks: Task[]
   approvals: Approval[]
+  reservations: Reservation[]
   lastResult: ActResult | null
   lastResultAt: number | null
   submitAct: (type: ActType, from: string, payload: Record<string, unknown>) => Promise<ActResult>
@@ -213,7 +237,7 @@ interface CoordinationConsoleInnerProps {
 }
 
 export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
-  const { agents, tasks, approvals, lastResult, lastResultAt, submitAct } = props
+  const { agents, tasks, approvals, reservations, lastResult, lastResultAt, submitAct } = props
   void props.resetLastResult // reserved for parent-driven resets; not used in-component.
 
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents])
@@ -315,6 +339,16 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
             to: 'agent.architect',
           }
           break
+        case 'qa_reserve_auth_conflict':
+          type = 'reserve_files'
+          from = 'agent.qa'
+          payload = { patterns: ['api-gateway/src/auth/**'], reason: 'want to add auth tests' }
+          break
+        case 'backend_release_auth':
+          type = 'release_files'
+          from = 'agent.backend'
+          payload = { taskId: 'task_42' }
+          break
         case 'architect_decide_42':
           type = 'decision'
           from = 'agent.architect'
@@ -379,7 +413,7 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
       {/* Scenario buttons */}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {SCENARIOS.map((s) => {
-          const enabled = s.enabled({ tasks, approvals })
+          const enabled = s.enabled({ tasks, approvals, reservations })
           const h = FAMILY_HUE[s.family]
           const isBusy = busyId === s.id
           const result = results[s.id]
@@ -581,6 +615,59 @@ export function CoordinationConsole(props: CoordinationConsoleInnerProps) {
                     )}
                   </li>
                 ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* File reservations */}
+      <Card className="p-0 py-0">
+        <CardHeader className="gap-1.5 border-b border-border/60 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <LockIcon className="size-4 text-emerald-600" aria-hidden />
+              File Reservations
+            </CardTitle>
+            <Badge variant="outline" className="border-border/60 px-1.5 py-0 font-mono text-[10px] uppercase text-muted-foreground">
+              {reservations.length} active
+            </Badge>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Who may change which files right now. Exclusive reservations block other agents&apos; edits (Claude Code hook) and
+            commits (git pre-commit hook). They expire, follow the task on handoff, and are released when the task completes.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 py-3">
+          {reservations.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border/70 bg-muted/30 px-4 py-4 text-center text-[12px] text-muted-foreground">
+              No files are reserved.
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {reservations.map((r) => (
+                <li key={r.id} className="flex flex-col gap-1 rounded-md border border-border/60 bg-background/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {r.patterns.map((p) => (
+                        <span key={p} className="rounded bg-foreground/5 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+                          {p}
+                        </span>
+                      ))}
+                      <Badge variant="outline" className={cn('px-1.5 py-0 font-mono text-[10px] uppercase', r.exclusive ? hue.badge.emerald : hue.badge.slate)}>
+                        {r.exclusive ? 'exclusive' : 'shared'}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
+                      <span>
+                        holder: <span className="font-mono text-foreground">{agentNameById.get(r.agentId) ?? r.agentId}</span>
+                      </span>
+                      {r.taskId && <span className="font-mono">{r.taskId}</span>}
+                      <span className="font-mono text-[10px]">until {new Date(r.expiresAt).toLocaleTimeString()}</span>
+                      <span className="font-mono text-[10px]">{r.id}</span>
+                    </div>
+                  </div>
+                </li>
+              ))}
             </ul>
           )}
         </CardContent>

@@ -18,7 +18,9 @@ import {
   formatZodError,
   type PayloadOf,
 } from '../protocol/payloads.js'
-import type { Approval, Clearance, Gate, LedgerEvent, Task, TaskStatus } from '../state/types.js'
+import type { Approval, Clearance, Gate, LedgerEvent, Reservation, Task, TaskStatus } from '../state/types.js'
+import { normalizePath } from './paths.js'
+import { conflictsFor, describeReservation, isActiveReservation } from './reservations.js'
 import {
   NeuralOpsError,
   conflict,
@@ -48,6 +50,7 @@ export interface ActResult {
   stateChanged: boolean
   task?: Task
   message?: string
+  reservation?: Reservation
   error?: string
   errorCode?: ErrorCode
 }
@@ -165,6 +168,20 @@ function removeSubscription(agentId: string, target: string): boolean {
   if (!agent || !agent.subscriptions.includes(target)) return false
   agent.subscriptions = agent.subscriptions.filter((s) => s !== target)
   return true
+}
+
+/** Release every active reservation bound to a task (on complete / release). Returns released ids. */
+function releaseTaskReservations(task: Task, by: string, at: string, reason: string): string[] {
+  const ids: string[] = []
+  for (const r of store.reservations.values()) {
+    if (r.taskId === task.id && !r.releasedAt) {
+      r.releasedAt = at
+      r.releasedBy = by
+      r.releaseReason = reason
+      ids.push(r.id)
+    }
+  }
+  return ids
 }
 
 function addSeconds(iso: string, seconds: number): string {
@@ -397,7 +414,8 @@ const handleRelease: Handler<'release'> = (act, p) => {
   task.blockedReason = null
   task.updatedAt = act.timestamp
   removeSubscription(act.from, task.id)
-  const evt = record(act, task, before, { status: task.status, assignee: null, pendingHandoffTo: null }, `${act.from} released task ${task.id}: ${p.reason}`)
+  const freed = releaseTaskReservations(task, act.from, act.timestamp, 'task released')
+  const evt = record(act, task, before, { status: task.status, assignee: null, pendingHandoffTo: null, releasedReservations: freed }, `${act.from} released task ${task.id}: ${p.reason}`, freed)
   return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
@@ -516,13 +534,14 @@ const handleComplete: Handler<'complete'> = (act, p) => {
   task.progress = 100
   task.eta = null
   task.updatedAt = act.timestamp
+  const freed = releaseTaskReservations(task, act.from, act.timestamp, 'task completed')
   const evt = record(
     act,
     task,
     before,
-    { status: task.status, resultRef: task.resultRef, progress: 100, consumedApprovals: toConsume.map((a) => a.id), clearances: clearances.map((c) => `${c.action}/${c.scope} via ${c.via}`) },
-    `${act.from} completed task ${task.id}: ${p.summary}`,
-    [...evidenceIds, ...toConsume.map((a) => a.id)]
+    { status: task.status, resultRef: task.resultRef, progress: 100, consumedApprovals: toConsume.map((a) => a.id), clearances: clearances.map((c) => `${c.action}/${c.scope} via ${c.via}`), releasedReservations: freed },
+    `${act.from} completed task ${task.id}: ${p.summary}${freed.length ? ` (released ${freed.length} file reservation${freed.length > 1 ? 's' : ''})` : ''}`,
+    [...evidenceIds, ...toConsume.map((a) => a.id), ...freed]
   )
   return { ledgerEvent: evt, approval: toConsume[0] ?? null, stateChanged: true, task: taskView(task) }
 }
@@ -557,6 +576,105 @@ const handleStatus: Handler<'status'> = (act, p) => {
     `${act.from} status on ${task.id}: ${p.progress}%${p.eta ? ` (ETA ${p.eta})` : ''}${p.note ? ` — ${p.note}` : ''}`
   )
   return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
+
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
+
+const handleReserveFiles: Handler<'reserve_files'> = (act, p) => {
+  const patterns = [...new Set(p.patterns.map(normalizePath))].sort()
+  let task: Task | null = null
+  if (p.taskId) {
+    task = requireTask(p.taskId)
+    requireOpen(task, 'reserve files for')
+    requireOwner(task, act.from, 'reserve files for')
+  }
+  const exclusive = p.exclusive ?? true
+  const clashes = conflictsFor(act.from, patterns, exclusive, act.timestamp)
+  if (clashes.length) {
+    throw conflict(
+      `Already reserved: ${clashes.map(describeReservation).join('; ')}. Ask the holder (question act), work on other files, or wait for the reservation to expire.`
+    )
+  }
+  const expiresAt = addSeconds(act.timestamp, p.ttlSeconds ?? 3600)
+  const taskId = p.taskId ?? null
+
+  // Re-reserving the same patterns renews instead of stacking reservations.
+  const same = [...store.reservations.values()].find(
+    (r) => r.agentId === act.from && r.taskId === taskId && r.exclusive === exclusive && sameList(r.patterns, patterns) && isActiveReservation(r, act.timestamp)
+  )
+  if (same) {
+    const before = { expiresAt: same.expiresAt }
+    same.expiresAt = expiresAt
+    if (p.reason) same.reason = p.reason
+    const evt = record(act, task, before, { reservationId: same.id, expiresAt }, `${act.from} renewed ${same.id} (${patterns.join(', ')}) until ${expiresAt}`, [same.id])
+    return { ledgerEvent: evt, approval: null, stateChanged: true, reservation: structuredClone(same), task: task ? taskView(task) : undefined }
+  }
+
+  const id = store.nextId('reservation', (x) => store.reservations.has(x))
+  const r: Reservation = {
+    id,
+    workspaceId: store.agents.get(act.from)!.workspaceId,
+    agentId: act.from,
+    taskId,
+    patterns,
+    exclusive,
+    reason: p.reason ?? null,
+    createdAt: act.timestamp,
+    expiresAt,
+    releasedAt: null,
+    releasedBy: null,
+    releaseReason: null,
+  }
+  store.reservations.set(id, r)
+  const evt = record(
+    act,
+    task,
+    {},
+    { reservationId: id, patterns, exclusive, expiresAt },
+    `${act.from} reserved ${patterns.join(', ')} (${exclusive ? 'exclusive' : 'shared'}, until ${expiresAt})`,
+    [id]
+  )
+  return { ledgerEvent: evt, approval: null, stateChanged: true, reservation: structuredClone(r), task: task ? taskView(task) : undefined }
+}
+
+/** Holder, anyone above the holder, governors and wildcard holders may release a reservation. */
+function canReleaseFor(agentId: string, holder: string): boolean {
+  return agentId === holder || isAbove(agentId, holder) || hasWildcard(agentId) || canGovern(agentId)
+}
+
+const handleReleaseFiles: Handler<'release_files'> = (act, p) => {
+  let targets: Reservation[]
+  if (p.reservationId) {
+    const r = store.reservations.get(p.reservationId)
+    if (!r) throw notFound(`Reservation ${p.reservationId} not found`)
+    if (r.releasedAt) throw conflict(`Reservation ${r.id} was already released by ${r.releasedBy}`)
+    if (!canReleaseFor(act.from, r.agentId)) {
+      throw forbidden(`${r.id} belongs to ${r.agentId}; only it, its managers or governors can release it.`)
+    }
+    targets = [r]
+  } else {
+    targets = [...store.reservations.values()].filter(
+      (r) => r.agentId === act.from && !r.releasedAt && (p.all || r.taskId === p.taskId)
+    )
+  }
+  if (targets.length === 0) throw conflict(`${act.from} has no active file reservations matching that request.`)
+  const forced = targets.some((r) => r.agentId !== act.from)
+  for (const r of targets) {
+    r.releasedAt = act.timestamp
+    r.releasedBy = act.from
+    r.releaseReason = forced ? 'force-released' : 'released by holder'
+  }
+  const ids = targets.map((r) => r.id)
+  const task = targets[0].taskId ? store.tasks.get(targets[0].taskId) ?? null : null
+  const evt = record(
+    act,
+    task,
+    {},
+    { released: ids },
+    `${act.from} ${forced ? 'FORCE-released' : 'released'} ${ids.join(', ')} (${targets.flatMap((r) => r.patterns).join(', ')})`,
+    ids
+  )
+  return { ledgerEvent: evt, approval: null, stateChanged: true }
 }
 
 // ---------------------------------------------------------------- handoff family
@@ -608,7 +726,15 @@ const handleAcceptHandoff: Handler<'accept_handoff'> = (act, p) => {
   task.blockedReason = null
   task.updatedAt = act.timestamp
   task.claims.push({ agentId: act.from, timestamp: act.timestamp, note: `accepted handoff (${ho?.intent ?? 'unknown intent'})` })
-  const evt = record(act, task, before, { assignee: task.assignee, status: task.status, pendingHandoffTo: null }, `${act.from} accepted handoff of ${task.id} from ${previousOwner}`)
+  // File reservations bound to the task follow it to the new owner.
+  const moved: string[] = []
+  for (const r of store.reservations.values()) {
+    if (r.taskId === task.id && r.agentId === previousOwner && isActiveReservation(r, act.timestamp)) {
+      r.agentId = act.from
+      moved.push(r.id)
+    }
+  }
+  const evt = record(act, task, before, { assignee: task.assignee, status: task.status, pendingHandoffTo: null, movedReservations: moved }, `${act.from} accepted handoff of ${task.id} from ${previousOwner}${moved.length ? ` (took over ${moved.length} file reservation${moved.length > 1 ? 's' : ''})` : ''}`, moved)
   return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
 }
 
@@ -899,6 +1025,8 @@ const HANDLERS: { [K in ActType]: Handler<K> } = {
   complete: handleComplete,
   block: handleBlock,
   status: handleStatus,
+  reserve_files: handleReserveFiles,
+  release_files: handleReleaseFiles,
   handoff: handleHandoff,
   accept_handoff: handleAcceptHandoff,
   reject_handoff: handleRejectHandoff,

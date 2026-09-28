@@ -45,7 +45,7 @@ describe('golden path', () => {
 })
 
 describe('every act type is implemented', () => {
-  test('all 23 act types succeed in one scenario', () => {
+  test('all 25 act types succeed in one scenario', () => {
     const seen = new Set<ActType>()
     const run = (from: string, type: ActType, payload: Record<string, unknown>) => {
       const r = ok(act(from, type, payload))
@@ -59,6 +59,8 @@ describe('every act type is implemented', () => {
     run('agent.qa', 'claim', { taskId: 'task_x' }) // owner re-claim unblocks
     expect(task('task_x').status).toBe('in_progress')
     run('agent.qa', 'update', { taskId: 'task_x', field: 'nextSteps', value: ['write tests'] })
+    run('agent.qa', 'reserve_files', { taskId: 'task_x', patterns: ['tests/x/**'] })
+    run('agent.qa', 'release_files', { taskId: 'task_x' })
     run('agent.qa', 'handoff', { taskId: 'task_x', to: 'agent.backend', intent: 'implement' })
     run('agent.backend', 'reject_handoff', { taskId: 'task_x', reason: 'busy' })
     run('agent.qa', 'handoff', { taskId: 'task_x', to: 'agent.security', intent: 'review' })

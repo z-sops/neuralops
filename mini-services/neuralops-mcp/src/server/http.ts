@@ -17,6 +17,7 @@ import { approverFor } from '../engines/authority.js'
 import { demoToken, registerAgent } from '../engines/agents.js'
 import { deletePolicy, revokeAgent, rotateToken, setAuthority, setPolicy } from '../engines/admin.js'
 import { gateStatus } from '../engines/gate.js'
+import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { genesis, verifyIntegrity, type JournalFile } from '../engines/replay.js'
 import { sha256 } from '../state/store.js'
 import { TOOL_DEFS, callTool, type Caller } from '../mcp/tools.js'
@@ -67,6 +68,7 @@ export function snapshotState(config?: Pick<Config, 'mode'>) {
     tasks: [...store.tasks.values()],
     approvals: [...store.approvals.values()],
     policies: [...store.policies.values()],
+    reservations: activeReservations(),
     ledger: store.ledger.slice(-50).reverse(),
     ledgerTotal: store.ledger.length,
     ledgerHead: store.ledgerHead,
@@ -163,6 +165,16 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           return send(res, 200, events.slice(-limit).reverse())
         }
         if (path === '/api/integrity') return send(res, 200, verifyIntegrity(deps.journal))
+        if (path === '/api/reservations') {
+          const agentId = q('agentId')
+          const taskId = q('taskId')
+          return send(res, 200, activeReservations().filter((r) => (!agentId || r.agentId === agentId) && (!taskId || r.taskId === taskId)))
+        }
+        if (path === '/api/reservations/check') {
+          const paths = url.searchParams.getAll('path')
+          if (paths.length === 0) throw new NeuralOpsError('invalid', 'at least one ?path= is required')
+          return send(res, 200, { agentId: caller.agentId, results: checkPaths(caller.agentId, paths.slice(0, 500)) })
+        }
         if (path === '/api/gate/status') {
           const taskId = q('taskId')
           if (!taskId) throw new NeuralOpsError('invalid', 'taskId is required')
@@ -218,6 +230,13 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           if (!caller.agentId) throw forbidden('Acts need an agent identity (bearer token, or `from` in demo mode)')
           const result = processAct({ ...body, from: caller.agentId }, { via: caller.via })
           return send(res, result.ok ? 200 : HTTP_STATUS[result.errorCode ?? 'invalid'], result)
+        }
+
+        if (path === '/api/reservations/check') {
+          const caller = callerFor(req, claimed)
+          const paths = Array.isArray(body.paths) ? body.paths.map(String).slice(0, 500) : []
+          if (paths.length === 0) throw new NeuralOpsError('invalid', 'paths[] is required')
+          return send(res, 200, { agentId: caller.agentId, results: checkPaths(caller.agentId, paths) })
         }
 
         const toolMatch = path.match(/^\/api\/tools\/([a-zA-Z_]+)$/)

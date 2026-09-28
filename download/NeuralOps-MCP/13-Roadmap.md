@@ -30,6 +30,12 @@
 ✅ Prompt-injection guard; rate limiting
 ✅ 101 automated tests
 
+## V0.1.3 — File reservations (DONE)
+
+✅ reserve_files / release_files with conservative glob overlap, TTL, renew, force-release
+✅ Follows the task (auto-release on complete/release, moves on handoff, released on revoke)
+✅ Enforced on edits (Claude Code hook) and commits (git pre-commit, every agent)
+
 ## V0.2 — Real Agent Integration (next)
 
 ### Real MCP transport

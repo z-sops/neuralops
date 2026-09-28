@@ -80,6 +80,26 @@ export const StatusPayload = z.object({
   note: text(1000).optional(),
 })
 
+export const ReserveFilesPayload = z.object({
+  patterns: z
+    .array(z.string().min(1).max(300))
+    .min(1)
+    .max(50)
+    .describe('Repo-relative paths or globs, e.g. ["src/auth/**", "src/db/schema.ts"]. A trailing "/" means the whole directory.'),
+  taskId: id.optional().describe('Task this work belongs to (you must own it). Recommended: reservations then follow the task.'),
+  ttlSeconds: z.number().int().min(60).max(24 * 3600).optional().describe('Default 3600 (1 hour)'),
+  exclusive: z.boolean().optional().describe('Default true. false = shared (only conflicts with exclusive reservations)'),
+  reason: text(500).optional(),
+})
+
+export const ReleaseFilesPayload = z
+  .object({
+    reservationId: id.optional(),
+    taskId: id.optional(),
+    all: z.boolean().optional(),
+  })
+  .refine((p) => !!(p.reservationId || p.taskId || p.all), 'reservationId, taskId or all=true is required')
+
 // ---- handoff family ----
 export const HandoffPayload = z.object({
   taskId: id,
@@ -194,6 +214,8 @@ export const PAYLOAD_SCHEMAS = {
   complete: CompletePayload,
   block: BlockPayload,
   status: StatusPayload,
+  reserve_files: ReserveFilesPayload,
+  release_files: ReleaseFilesPayload,
   handoff: HandoffPayload,
   accept_handoff: AcceptHandoffPayload,
   reject_handoff: RejectHandoffPayload,

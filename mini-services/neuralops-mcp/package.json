@@ -1,6 +1,6 @@
 {
   "name": "neuralops-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p .",
     "gate-check": "bun src/cli/gate-check.ts",
     "report-evidence": "bun src/cli/report-evidence.ts",
-    "hook:claude": "bun src/hooks/claude-pretooluse.ts"
+    "hook:claude": "bun src/hooks/claude-pretooluse.ts",
+    "install-git-hook": "bun src/cli/install-git-hook.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",
