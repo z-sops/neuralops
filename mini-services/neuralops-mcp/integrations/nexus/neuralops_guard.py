@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 __all__ = ["NeuralOpsGuard", "Decision", "ToolBlocked"]
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 
 @dataclass(frozen=True)

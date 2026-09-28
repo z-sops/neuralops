@@ -263,3 +263,10 @@ Verification: 122 tests pass; backend + frontend tsc and lint clean; browser via
 - Approval `detail` flagged as untrusted in the approver's inbox
 - Apache-2.0 LICENSE; docs/PITCH.md rewritten as the Nexus proposal; doc 20
 - 140 tests pass; tsc + lint clean
+
+## 2026-09-28 — V0.1.5 Governance setup
+- `authorize` takes an optional `reason` (approval + ledger)
+- Read-only audit identities (`access: "audit"`): ledger/integrity/approvals/policies/freeze/whoami only; 403 on acts, tools, /mcp, WS; dispatcher refuses too
+- Policy presets: nexus-default, solo-dev, two-agent-team, production-gated, lockdown (`/api/presets`, apply = admin)
+- Webhook: approval.requested / approval.decided / workspace.frozen|unfrozen, HMAC-signed, one retry, silent during replay
+- 148 tests; docs 21, README, Nexus guide, pitch updated

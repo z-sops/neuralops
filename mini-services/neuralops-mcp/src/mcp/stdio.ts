@@ -44,7 +44,7 @@ async function core<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
 }
 
 const server = new Server(
-  { name: 'neuralops', version: '0.1.4' },
+  { name: 'neuralops', version: '0.1.5' },
   {
     capabilities: { tools: {} },
     instructions:

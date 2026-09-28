@@ -266,6 +266,9 @@ export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult
     if (actor.revokedAt) {
       throw forbidden(`${act.from} was revoked at ${actor.revokedAt}; an admin must re-issue its token.`)
     }
+    if (actor.access === 'audit') {
+      throw forbidden(`${act.from} is a read-only audit identity and cannot act.`)
+    }
     if (store.freeze) {
       const f = store.freeze
       throw forbidden(`Workspace is FROZEN (incident mode) since ${f.at} by ${f.by}: ${f.reason}. No acts are accepted until an admin unfreezes it.`)
@@ -949,9 +952,9 @@ const handleRequestApproval: Handler<'request_approval'> = (act, p) => {
 }
 
 const handleAuthorize: Handler<'authorize'> = (act, p) => {
-  const approval = authorizeApproval(p.approvalId, act.from, act.timestamp)
+  const approval = authorizeApproval(p.approvalId, act.from, act.timestamp, p.reason)
   const task = approval.taskId ? store.tasks.get(approval.taskId) ?? null : null
-  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'approved', decidedBy: act.from }, `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope} for ${approval.requestedBy})`, [approval.id])
+  const evt = record(act, task, { approvalStatus: 'pending' }, { approvalStatus: 'approved', decidedBy: act.from, ...(p.reason ? { reason: p.reason } : {}) }, `${act.from} AUTHORIZED ${approval.id} (${approval.action}/${approval.scope} for ${approval.requestedBy})${p.reason ? `: ${p.reason}` : ''}`, [approval.id])
   return { ledgerEvent: evt, approval, stateChanged: true, task: task ? taskView(task) : undefined }
 }
 

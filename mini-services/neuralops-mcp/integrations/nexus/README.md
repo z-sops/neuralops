@@ -68,10 +68,26 @@ Policies name an action, a scope and the approver. An action no policy covers
 runs at once (and is still logged). A `*`/`*` policy makes everything need
 approval.
 
+The quickest start is the `nexus-default` preset: writes to Odoo and databases,
+sending email, payments, file deletes and deploys (all in `production`) need
+the approver you name; reading and searching flow.
+
+```bash
+curl -s $CORE/api/presets/nexus-default -H "$A"                      # see what it sets
+curl -s -X POST $CORE/api/presets/nexus-default/apply -H "$A" -H "$J" \
+  -d '{"approver":"agent.noaman"}'
+```
+
+Or one policy at a time:
+
 ```bash
 curl -s -X POST $CORE/api/policies -H "$A" -H "$J" \
   -d '{"action":"odoo.write","scope":"production","approver":"agent.noaman"}'
 ```
+
+Other presets: `solo-dev`, `two-agent-team`, `production-gated`, `lockdown`
+(`GET /api/presets`). Re-applying a preset updates its policies instead of
+duplicating them.
 
 Approvals are single-use and bound to the requester, the action and the
 scope; nobody can approve their own request, and an identity with `deny`
@@ -129,14 +145,48 @@ If Nexus cannot send a header for an MCP server, start the core with
 (the token then appears in URLs and logs, so prefer the header). Tokens are
 per identity, so each persona that should act as itself needs its own entry.
 
-## 6. Approvals, audit and the kill switch
+## 6. Tell Nexus when a person is needed (webhook)
+
+Start the core with a webhook and Nexus (or Slack, or a pager) is told the
+moment an approval is waiting:
+
+```bash
+NEURALOPS_WEBHOOK_URL=http://<nexus-host>/hooks/neuralops \
+NEURALOPS_WEBHOOK_SECRET=$(openssl rand -hex 16) \
+... bun src/index.ts
+```
+
+Each event is a JSON POST:
+
+```json
+{ "event": "approval.requested", "at": "2026-09-28T07:12:03.120Z",
+  "approval": { "id": "approval_0007", "action": "odoo.write", "scope": "production",
+                "requestedBy": "agent.layla", "approver": "agent.noaman",
+                "detail": "create_invoice: {\"partner\":\"ACME\",\"amount\":5000}", "status": "pending", "...": "..." },
+  "ledger": { "seq": 41, "actId": "act_000019", "actType": "perform", "actor": "agent.layla", "summary": "...", "hash": "..." } }
+```
+
+Events: `approval.requested`, `approval.decided` (with `status` and the
+approver's `reason`), `workspace.frozen`, `workspace.unfrozen`. With a secret,
+verify `X-NeuralOps-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>`
+before trusting a call. `detail` is written by the requesting persona: show it
+to people, and if a model reads it, treat it as data (it arrives flagged when
+it looks like instructions). Delivery never blocks an act; a failed POST is
+retried once after 2 seconds.
+
+A natural flow: the webhook posts an `@form` into the approver's Nexus chat;
+the form's buttons call `authorize` (with an optional `reason`) or `deny`
+with the approver's own token.
+
+## 7. Approvals, audit and the kill switch
 
 | Need | Call |
 |---|---|
 | What is waiting on a person | `GET /api/inbox` with that person's token → `approvalsToDecide` |
-| Approve / deny | `POST /api/acts` `{"type":"authorize","payload":{"approvalId":"approval_0007"}}` (or `deny` with a `reason`) |
+| Approve / deny | `POST /api/acts` `{"type":"authorize","payload":{"approvalId":"approval_0007","reason":"agreed on the call"}}` (`reason` optional), or `deny` with a `reason` |
 | Live feed | WebSocket `ledger:event` |
 | Audit log | `GET /api/ledger`, `GET /api/integrity` (hash chain + replay check) |
+| Give a client's auditor access | register with `"access":"audit"`: that token can read the ledger, integrity proof, approvals and policies, and can never act |
 | Stop everything | `POST /api/admin/freeze {"reason":"…"}` (admin) — acts, gates, guard, hooks all refuse |
 | Resume | `POST /api/admin/unfreeze` |
 
@@ -146,7 +196,8 @@ form posts `authorize` or `deny` with the approver's own token.
 ## Tested
 
 `tests/nexus.test.ts` (perform, freeze, `/mcp` over streamable HTTP with
-per-persona tokens) and `tests/nexus-guard.test.ts`, which runs
+per-persona tokens), `tests/governance.test.ts` (presets, approval reasons,
+audit identities, the signed webhook with retry) and `tests/nexus-guard.test.ts`, which runs
 `test_guard.py` against a live secure-mode core: ungoverned calls, the
 approval round-trip through `process_tool_call`, single use, the decorator,
 fail-closed, freeze, and a real pydantic-ai agent whose tool must not run

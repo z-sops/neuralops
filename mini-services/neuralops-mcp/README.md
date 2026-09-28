@@ -1,6 +1,6 @@
-# NeuralOps — Coordination Core (v0.1.4)
+# NeuralOps — Coordination Core (v0.1.5)
 
-The core service: typed acts, policies and single-use approvals, gated actions (`perform`), a kill switch, file reservations, a signed and replayable ledger, and MCP over stdio and streamable HTTP. Overview, concepts, API and configuration: the [root README](../../README.md). NeuralOps Nexus setup: [`integrations/nexus/README.md`](integrations/nexus/README.md).
+The core service: typed acts, policies and single-use approvals, gated actions (`perform`), a kill switch, policy presets, an approval webhook, read-only audit identities, file reservations, a signed and replayable ledger, and MCP over stdio and streamable HTTP. Overview, concepts, API and configuration: the [root README](../../README.md). NeuralOps Nexus setup: [`integrations/nexus/README.md`](integrations/nexus/README.md).
 
 ## Run
 
@@ -60,21 +60,23 @@ src/
   engines/guard.ts     prompt-injection guard for agent-authored text
   engines/paths.ts     glob matching + conservative overlap
   engines/reservations.ts  file reservations (who may change which files)
+  engines/presets.ts   policy presets (nexus-default, solo-dev, two-agent-team, production-gated, lockdown)
+  server/webhook.ts    approval.requested / approval.decided / workspace.frozen webhook (HMAC-signed)
   cli/                 gate-check, report-evidence, install-git-hook
   hooks/               pre-tool hook for Claude Code / Codex / Gemini CLI, git pre-commit hook
 integrations/          GitHub workflow; Claude Code, Codex CLI and Gemini CLI hook configs; nexus/ (Python guard for NeuralOps Nexus)
-tests/                 140 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations, nexus
+tests/                 148 tests: regressions, protocol, replay, http, mcp, security, enforcement, reservations, nexus
 ```
 
 ## Verify
 
 ```bash
-bun test            # 140 tests (the Python guard test needs python3)
+bun test            # 148 tests (the Python guard test needs python3)
 bun run typecheck
 curl localhost:3031/api/integrity   # hash chain + replay check
 ```
 
-Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`, `20-V0.1.4-Nexus-Gate.md`.
+Change notes: `download/NeuralOps-MCP/17-V0.1.1-Hardening.md`, `18-V0.1.2-Security.md`, `19-V0.1.3-File-Reservations.md`, `20-V0.1.4-Nexus-Gate.md`, `21-V0.1.5-Governance-Setup.md`.
 
 ## Enforce outside the model
 

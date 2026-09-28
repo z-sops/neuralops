@@ -18,6 +18,7 @@
 | File reservations | ✅ Real (V0.1.3) | Conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits (every agent) |
 | Gated tool calls (Nexus) | ✅ Real (V0.1.4) | `perform` act + Python guard (pydantic-ai `process_tool_call`), tested with a real pydantic-ai agent; not yet run inside a real Nexus deployment |
 | Kill switch | ✅ Real (V0.1.4) | Freeze/unfreeze (admin), journaled, blocks acts, gates, guard, hooks, pre-commit |
+| Presets, webhook, audit identities | ✅ Real (V0.1.5) | Presets audited + replayed; webhook signed, one retry, not re-sent on replay; auditors read-only (HTTP, MCP, WS, dispatcher) |
 | HTTP REST + WebSocket | ✅ Real | Proper status codes, body limit, WS auth in secure mode |
 | Dashboard | ✅ Real | Browser-tested golden path (10 steps) |
 

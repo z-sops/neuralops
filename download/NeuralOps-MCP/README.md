@@ -1,7 +1,7 @@
 # NeuralOps MCP — Product Documentation Package
 
 > **AI Workforce Coordination Protocol**
-> V0.1.4 — Nexus Gate: gated tool calls, streamable-HTTP MCP, Python guard, kill switch (see `20-V0.1.4-Nexus-Gate.md`)
+> V0.1.5 — Governance setup: presets, approval webhook, approval reasons, read-only auditors (see `21-V0.1.5-Governance-Setup.md`; V0.1.4 Nexus Gate: `20-…`)
 
 ---
 
@@ -35,7 +35,8 @@ NeuralOps-MCP/
 ├── 17-V0.1.1-Hardening.md                 ← V0.1.1: fixes, MCP setup, tests
 ├── 18-V0.1.2-Security.md                  ← V0.1.2: gateway, signed journal, tokens, CI/hook enforcement
 ├── 19-V0.1.3-File-Reservations.md         ← V0.1.3: file reservations + git pre-commit for every agent
-└── 20-V0.1.4-Nexus-Gate.md                ← V0.1.4: NeuralOps Nexus ke liye: perform, /mcp, Python guard, kill switch
+├── 20-V0.1.4-Nexus-Gate.md                ← V0.1.4: NeuralOps Nexus ke liye: perform, /mcp, Python guard, kill switch
+└── 21-V0.1.5-Governance-Setup.md          ← V0.1.5: presets, webhook, approval reason, audit identities
 ```
 
 ## Kaise read karein
@@ -66,10 +67,11 @@ Protocol real hai. Demo agents UI se chalte hain, aur asli agents (Claude Code, 
 - ✅ Signed journal, token expiry/revoke/rotate, admin API, rate limiting, loopback-only by default
 - ✅ Protocol Inspector: 10-step golden path browser-tested (Playwright)
 - ✅ File reservations: conflicts at reserve time, Claude Code hook on edits, git pre-commit on commits
-- ✅ 140 automated tests; tsc + lint clean (frontend + backend)
+- ✅ 148 automated tests; tsc + lint clean (frontend + backend)
 - ✅ Hooks for Claude Code, Codex CLI and Gemini CLI (same rules, one implementation)
 - ✅ NeuralOps Nexus: gated tool calls (`perform`), Python guard for nexus-ai, kill switch
 - ✅ License: Apache-2.0
+- ✅ Policy presets (nexus-default …), approval webhook (HMAC-signed), approval reasons, read-only audit identities
 - 📋 Next: multi-workspace, DB-backed journal
 
 ---

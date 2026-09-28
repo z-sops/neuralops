@@ -160,7 +160,7 @@ function getPending(approvalId: string): Approval {
   return approval
 }
 
-export function authorize(approvalId: string, decidedBy: string, at: string): Approval {
+export function authorize(approvalId: string, decidedBy: string, at: string, reason?: string): Approval {
   const approval = getPending(approvalId)
   if (decidedBy === approval.requestedBy) {
     throw forbidden(`${decidedBy} cannot authorize its own request ${approvalId}`)
@@ -173,6 +173,7 @@ export function authorize(approvalId: string, decidedBy: string, at: string): Ap
   approval.status = 'approved'
   approval.decidedBy = decidedBy
   approval.decidedAt = at
+  if (reason) approval.reason = reason
   return approval
 }
 

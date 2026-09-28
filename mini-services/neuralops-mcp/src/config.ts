@@ -22,6 +22,8 @@
 // NEURALOPS_MCP_URL_TOKENS          "1" also accepts the agent token in the MCP URL (POST /mcp/<token>)
 //                                   for MCP hosts that cannot send an Authorization header. The token
 //                                   then appears in URLs/logs — prefer the header.
+// NEURALOPS_WEBHOOK_URL             POST approval.requested / approval.decided / workspace.frozen|unfrozen here
+// NEURALOPS_WEBHOOK_SECRET          optional HMAC-SHA256 key → X-NeuralOps-Signature: sha256=<hex>
 
 export type Mode = 'demo' | 'secure'
 
@@ -38,6 +40,7 @@ export interface Config {
   corsOrigin: string | null
   seedOnEmpty: boolean
   mcpUrlTokens: boolean
+  webhook: { url: string; secret: string | null } | null
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -84,5 +87,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     corsOrigin: env.NEURALOPS_CORS_ORIGIN ?? (mode === 'demo' ? '*' : null),
     seedOnEmpty: mode === 'demo',
     mcpUrlTokens: env.NEURALOPS_MCP_URL_TOKENS === '1',
+    webhook: env.NEURALOPS_WEBHOOK_URL ? { url: env.NEURALOPS_WEBHOOK_URL, secret: env.NEURALOPS_WEBHOOK_SECRET || null } : null,
   }
 }

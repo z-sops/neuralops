@@ -44,6 +44,20 @@
 ✅ Kill switch (freeze / unfreeze)
 ✅ Apache-2.0 license
 
+## V0.1.5 — Governance setup (DONE)
+
+✅ Approval reason on authorize
+✅ Read-only audit identities
+✅ Policy presets (nexus-default, solo-dev, two-agent-team, production-gated, lockdown)
+✅ Approval / freeze webhook (HMAC-signed)
+
+## After the first Nexus trial
+
+- [ ] Hook blocks recorded in the ledger + `feedback` act (was the block right or in the way?)
+- [ ] Trust-metrics page (blocks/week, right vs in the way, approval latency, evidence coverage)
+- [ ] Policy simulator (would this policy have blocked last week's acts?)
+- [ ] Budget gate (LiteLLM cost → approval when a budget runs out)
+
 ## V0.2 — Real Agent Integration (next)
 
 ### Real MCP transport

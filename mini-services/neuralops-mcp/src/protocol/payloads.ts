@@ -189,7 +189,10 @@ export const PerformPayload = z.object({
   detail: text(1000).optional().describe('Exactly what will happen (tool arguments), shown to the approver'),
 })
 
-export const AuthorizePayload = z.object({ approvalId: id })
+export const AuthorizePayload = z.object({
+  approvalId: id,
+  reason: text(1000).optional().describe('Why you approve (recorded in the ledger for the audit trail)'),
+})
 
 export const DenyPayload = z.object({
   approvalId: id,

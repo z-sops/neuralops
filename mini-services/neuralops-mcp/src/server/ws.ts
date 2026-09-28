@@ -20,7 +20,10 @@ export function setupWebSocket(httpServer: HTTPServer, config: Config): { io: IO
     io.use((socket, next) => {
       try {
         const token = (socket.handshake.auth as { token?: string })?.token ?? null
-        resolveCaller(config, token, null)
+        const caller = resolveCaller(config, token, null)
+        if (caller.agentId && store.agents.get(caller.agentId)?.access === 'audit') {
+          throw new Error('Read-only audit identities use GET /api/ledger and /api/integrity, not the live stream')
+        }
         next()
       } catch (e) {
         next(e as Error)

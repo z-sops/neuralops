@@ -6,7 +6,7 @@ When AI agents do real work (write to an ERP, send email, edit a repo, deploy), 
 
 It was built for [NeuralOps Nexus](https://github.com/mapax-io/neuralops-nexus), a human + AI workspace, and works just as well for coding agents (Claude Code, Codex CLI, Gemini CLI).
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) · V0.1.4 · 140 automated tests · Bun + TypeScript
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) · V0.1.5 · 148 automated tests · Bun + TypeScript
 
 > **Evaluating it for Nexus?** Start with the [proposal & test guide](docs/PITCH.md), then the [Nexus setup guide](mini-services/neuralops-mcp/integrations/nexus/README.md).
 
@@ -34,6 +34,9 @@ It was built for [NeuralOps Nexus](https://github.com/mapax-io/neuralops-nexus),
 |---|---|
 | **Gated actions** | Before an agent runs a tool that touches a real system, it calls `perform`. The answer is *allowed* (direct authority, or no policy covers it), *wait* (a named human must approve; approvals are single-use and never self-approved), or *frozen*. |
 | **Kill switch** | One admin call freezes every agent, persona, gate and hook until someone unfreezes it. |
+| **Setup in one call** | Policy presets (`nexus-default`, `solo-dev`, `two-agent-team`, `production-gated`, `lockdown`) set a sensible rulebook with the approver you name. |
+| **People in the loop** | A webhook tells Nexus, Slack or a pager when an approval is waiting, when it is decided (with the approver's reason), and when the workspace is frozen. |
+| **Auditors** | Read-only audit identities can read the ledger and the integrity proof, and nothing else; they can never act. |
 | **Coordination** | Tasks, claims, handoffs, decisions, evidence, questions and proposals as **26 typed acts**, plus a compact task context so the next agent doesn't need the whole history. |
 | **File reservations** | Agents reserve files or globs; others can't edit (pre-tool hooks) or commit (git pre-commit) what someone else holds. |
 | **Merge and deploy gates** | Tasks can require approval, and even VERIFIED evidence (recorded by CI, not claimed by the agent), before they may complete, merge or deploy. |
@@ -70,7 +73,7 @@ Requires [Bun](https://bun.sh) ≥ 1.1. For the dashboard also [Caddy](https://c
 git clone https://github.com/z-sops/neuralops.git
 cd neuralops/mini-services/neuralops-mcp
 bun install
-bun test                 # 140 pass
+bun test                 # 148 pass
 bun run dev              # core on 127.0.0.1:3031 (demo mode, seeded workspace)
 ```
 
@@ -103,7 +106,8 @@ Full guide: [`integrations/nexus/README.md`](mini-services/neuralops-mcp/integra
    NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) NEURALOPS_JOURNAL_KEY=$(openssl rand -hex 32) \
    bun mini-services/neuralops-mcp/src/index.ts
    ```
-2. **Register people and personas** (`POST /api/agents`, admin token; each gets its own token) and **add policies**, e.g. `odoo.write/production → agent.noaman`.
+2. **Register people and personas** (`POST /api/agents`, admin token; each gets its own token) and **set the rulebook** in one call: `POST /api/presets/nexus-default/apply {"approver":"agent.noaman"}` (or add policies one by one, e.g. `odoo.write/production → agent.noaman`).
+   Set `NEURALOPS_WEBHOOK_URL` so Nexus hears about approvals the moment they are needed.
 3. **Gate tool calls in `nexus-ai`** with the Python guard (standard library only):
    ```python
    from neuralops_guard import NeuralOpsGuard
@@ -157,6 +161,12 @@ Local hooks can be removed and `git commit --no-verify` skips git hooks, so the 
 
 **`perform`.** The generic gate for any action outside a task flow, such as a tool call: allowed with authority or when ungoverned, consumes an approved approval, or creates one (with the call's arguments as `detail`) and answers `allowed: false`.
 
+**Presets.** Named sets of policies applied with one approver (`GET /api/presets` to see them). Applying twice updates, never duplicates; every policy is an audited admin change.
+
+**Webhook.** `approval.requested`, `approval.decided` and `workspace.frozen`/`unfrozen` are POSTed to `NEURALOPS_WEBHOOK_URL`, optionally signed (`X-NeuralOps-Signature: sha256=<HMAC>`). Delivery never blocks an act; one retry; nothing is re-sent on replay.
+
+**Audit identities.** Registered with `"access": "audit"`: may `GET` only `/api/ledger`, `/api/integrity`, `/api/approvals`, `/api/policies`, `/api/freeze` and `/api/whoami`; every act, tool call, MCP call and the live stream are refused.
+
 **Kill switch.** `freeze` rejects every act, makes every gate answer "no" and makes hooks and the guard refuse. It is journaled, so it survives restarts.
 
 **Untrusted text.** Anything one agent writes that another will read (task titles, decisions, questions, tool arguments shown to approvers) is flattened, stripped of control characters, length-capped and flagged if it looks like instructions.
@@ -170,7 +180,7 @@ Base URL `http://<host>:3031`. Secure mode: `Authorization: Bearer <token>` on e
 | GET | `/api/health` | liveness, mode, `frozen` |
 | GET | `/api/state` | snapshot: agents, tasks, approvals, policies, reservations, freeze, recent ledger |
 | GET | `/api/inbox` | what is waiting on the caller (tasks, handoffs, approvals to decide, questions, reservations) |
-| POST | `/api/acts` | submit an act `{type, payload, references?, id?}` |
+| POST | `/api/acts` | submit an act `{type, payload, references?, id?}`; e.g. `authorize {approvalId, reason?}` |
 | GET / POST | `/api/tools` · `/api/tools/:name` | list / call any of the 39 MCP tools over plain HTTP |
 | POST | `/mcp` | MCP over streamable HTTP (stateless, per-token identity) |
 | GET | `/api/gate/status?taskId&action&scope` | the answer CI and hooks enforce |
@@ -181,6 +191,7 @@ Base URL `http://<host>:3031`. Secure mode: `Authorization: Bearer <token>` on e
 | PUT | `/api/agents/:id/authority` | set direct grants (admin) |
 | POST / DELETE | `/api/policies` · `/api/policies/:id` | policies (admin) |
 | POST | `/api/admin/freeze` · `/api/admin/unfreeze` | kill switch (admin) |
+| GET / POST | `/api/presets` · `/api/presets/:name` · `/api/presets/:name/apply` | list / inspect / apply a policy preset (apply: admin, `{approver}`) |
 | WS | socket.io on the same port | `state:snapshot`, `ledger:event` |
 
 Every admin change is itself a ledger event and is replayed on boot. Full reference: [`download/NeuralOps-MCP/08-API-Reference.md`](download/NeuralOps-MCP/08-API-Reference.md).
@@ -199,6 +210,8 @@ Every admin change is itself a ledger event and is replayed on boot. Full refere
 | `NEURALOPS_ADMIN_CAN_ACT` | off | `1` lets the admin token act as an agent in secure mode |
 | `NEURALOPS_MCP_URL_TOKENS` | off | `1` also accepts `/mcp/<token>` for MCP hosts that can't send headers |
 | `NEURALOPS_CORS_ORIGIN` | `*` in demo | CORS origin for browser clients |
+| `NEURALOPS_WEBHOOK_URL` | off | receive approval and freeze events |
+| `NEURALOPS_WEBHOOK_SECRET` | — | sign webhook bodies (`X-NeuralOps-Signature: sha256=<hex>`) |
 
 Client side (hooks, CLIs, stdio server, guard): `NEURALOPS_URL`, `NEURALOPS_TOKEN`, `NEURALOPS_SCOPE`, `NEURALOPS_TASK`, `NEURALOPS_HOOK_STRICT=1` (fail closed when the core is unreachable), `NEURALOPS_REQUIRE_RESERVATION=1`.
 
@@ -209,7 +222,7 @@ Client side (hooks, CLIs, stdio server, guard): `NEURALOPS_URL`, `NEURALOPS_TOKE
 - **Tamper evidence:** the journal is HMAC-chained with a signed head; any edit, deletion, reorder or truncation stops the server from booting and points to the backups. Anyone holding the journal key could rewrite history, so keep it out of the data folder in production.
 - **Fail closed:** push and deploy checks fail closed when the core is unreachable; edits and the guard can be switched between warn and block.
 - **Gateway:** the provided `Caddyfile` forwards only to the core's port and binds to loopback.
-- Every agent token can currently read the whole workspace; read-scoped roles are on the roadmap.
+- Audit identities are read-only and limited to the ledger, integrity proof, approvals and policies. Ordinary agent tokens can still read the whole workspace; per-agent read scopes are on the roadmap.
 
 Found a security issue? Please report it privately to the maintainer (GitHub security advisory or direct message) rather than in a public issue.
 
@@ -218,14 +231,14 @@ Found a security issue? Please report it privately to the maintainer (GitHub sec
 ```
 mini-services/neuralops-mcp/     ← the product: Coordination Core (Bun + TypeScript)
   src/protocol/                  act types, envelope, zod payload schemas (one registry)
-  src/engines/                   task-manager (dispatcher), authority, admin, gate, context,
+  src/engines/                   task-manager (dispatcher), authority, admin, gate, context, presets,
                                  reservations, paths, guard (untrusted text), replay (journal)
   src/state/                     types, store (hash-chained ledger, deterministic ids)
   src/mcp/                       tools (39), stdio server, streamable-HTTP server
-  src/server/                    HTTP routes, identity, rate limit, WebSocket
+  src/server/                    HTTP routes, identity, rate limit, WebSocket, webhook
   src/hooks/  src/cli/           pre-tool hook (Claude/Codex/Gemini), git pre-commit, gate-check, report-evidence
   integrations/                  nexus/ (Python guard), claude-code/, codex/, gemini/, github/
-  tests/                         140 tests (bun test)
+  tests/                         148 tests (bun test)
 src/                             Protocol Inspector dashboard (Next.js 16, React, Tailwind, shadcn/ui)
 docs/PITCH.md                    proposal & test guide for Nexus
 download/NeuralOps-MCP/          product documentation (01–20) + change notes per version
@@ -238,8 +251,9 @@ Caddyfile                        local gateway (:81 → dashboard, core only via
 
 ```bash
 cd mini-services/neuralops-mcp
-bun test                 # 140 tests: protocol, authority, replay/tamper, HTTP/WS, MCP stdio + HTTP,
-                         # reservations, hooks as real processes, Nexus perform/freeze, Python guard
+bun test                 # 148 tests: protocol, authority, replay/tamper, HTTP/WS, MCP stdio + HTTP,
+                         # reservations, hooks as real processes, Nexus perform/freeze, Python guard,
+                         # presets, audit identities, webhook
 bun run typecheck
 # repo root, for the dashboard:
 bunx tsc --noEmit && bun run lint
@@ -249,13 +263,13 @@ Where to start reading: `src/engines/task-manager.ts` (every act goes through `p
 
 ## Status, limits and roadmap
 
-**V0.1.4, working and tested; not yet used by anyone outside its author.**
+**V0.1.5, working and tested; not yet used by anyone outside its author.**
 
 Known limits: one process and one workspace with a JSONL journal (no multi-instance); not yet run inside a real Nexus deployment; approvals are single-use (no batch or time-boxed approvals yet); hook blocks are not yet written to the ledger; prompt-injection flagging is a heuristic.
 
-Next: approval reasons and webhooks, a read-only auditor role, policy presets, recording hook blocks, a trust-metrics page and policy simulator, budget gates, then a database-backed journal, snapshots, a load benchmark and external anchoring of the ledger. Details: [`download/NeuralOps-MCP/13-Roadmap.md`](download/NeuralOps-MCP/13-Roadmap.md) and [`12-Real-vs-Demo.md`](download/NeuralOps-MCP/12-Real-vs-Demo.md).
+Next (after the first Nexus trial): recording hook blocks in the ledger and a `feedback` act, a trust-metrics page, a policy simulator, budget gates (fed by LiteLLM cost data), then a database-backed journal, snapshots, a load benchmark and external anchoring of the ledger. Details: [`download/NeuralOps-MCP/13-Roadmap.md`](download/NeuralOps-MCP/13-Roadmap.md) and [`12-Real-vs-Demo.md`](download/NeuralOps-MCP/12-Real-vs-Demo.md).
 
-Documentation (Roman Urdu/English): [`download/NeuralOps-MCP/`](download/NeuralOps-MCP/README.md). Change notes: `17-V0.1.1-Hardening`, `18-V0.1.2-Security`, `19-V0.1.3-File-Reservations`, `20-V0.1.4-Nexus-Gate`.
+Documentation (Roman Urdu/English): [`download/NeuralOps-MCP/`](download/NeuralOps-MCP/README.md). Change notes: `17-V0.1.1-Hardening`, `18-V0.1.2-Security`, `19-V0.1.3-File-Reservations`, `20-V0.1.4-Nexus-Gate`, `21-V0.1.5-Governance-Setup`.
 
 ## Contributing
 

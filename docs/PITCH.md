@@ -14,7 +14,7 @@ It covers items on the Nexus roadmap that are not built yet: multi-agent coordin
 
 **The ask:** run it next to one Nexus deployment for a week, wire the guard into `nexus-ai`, and decide together whether it belongs inside Nexus.
 
-- Repo: [github.com/z-sops/neuralops](https://github.com/z-sops/neuralops) (public, `main` = V0.1.4)
+- Repo: [github.com/z-sops/neuralops](https://github.com/z-sops/neuralops) (public, `main` = V0.1.5)
 - Nexus setup guide: [`integrations/nexus/README.md`](../mini-services/neuralops-mcp/integrations/nexus/README.md)
 
 ## What Nexus has, and what this adds
@@ -51,15 +51,19 @@ flowchart LR
 
 The core is one Bun + TypeScript process with a REST API, a WebSocket stream and MCP. It talks to Nexus only over the network, so the two codebases and their licenses stay separate. Apache-2.0 code can also be moved into the AGPL Nexus repo if that turns out to be the better home.
 
-## What exists today (V0.1.4)
+## What exists today (V0.1.5)
 
-Everything below is in the repo and covered by 140 automated tests.
+Everything below is in the repo and covered by 148 automated tests.
 
 | Area | Feature | What it does |
 | --- | --- | --- |
 | Tool calls | `perform` act | Check before running; allowed via authority, via "ungoverned", or via a consumed approval; otherwise an approval is created with the call's details |
 | Tool calls | Python guard | `neuralops_guard.py`: pydantic-ai `process_tool_call` hook plus a decorator for plain tools; standard library only; fails closed if the core is down |
 | Tool calls | Kill switch | `POST /api/admin/freeze` / `unfreeze`; journaled, survives restarts, shown as a banner on the dashboard |
+| Setup | Policy presets | `nexus-default` (Odoo/DB writes, email, payments, deletes, deploys need a human) plus `solo-dev`, `two-agent-team`, `production-gated`, `lockdown`; one call with the approver's name |
+| People | Approval webhook | `approval.requested` / `approval.decided` / `workspace.frozen` POSTed to Nexus (or Slack), HMAC-signed; ideal for an `@form` in the approver's chat |
+| People | Approval reasons | The approver can say why; the reason is on the approval and in the ledger |
+| Audit | Auditor identities | Read-only tokens for a client's auditor: ledger, integrity proof, approvals, policies; can never act |
 | Interfaces | MCP over HTTP | `POST /mcp` (streamable HTTP, stateless), one bearer token per persona; optional token-in-URL for hosts that can't send headers |
 | Interfaces | MCP over stdio | For Claude Code, Codex CLI and Gemini CLI |
 | Interfaces | REST + WebSocket | Inbox, approvals, ledger, live `ledger:event` stream |
@@ -81,7 +85,7 @@ Everything below is in the repo and covered by 140 automated tests.
 git clone https://github.com/z-sops/neuralops.git
 cd neuralops/mini-services/neuralops-mcp
 bun install
-bun test        # expect: 140 pass, 0 fail (needs python3 for the guard test)
+bun test        # expect: 148 pass, 0 fail (needs python3 for the guard test)
 ```
 
 **2. Start it where `nexus-ai` can reach it (5 min).** Calls come from inside the `nexus-ai` container, so bind to the host IP. That requires secure mode:
@@ -92,7 +96,7 @@ NEURALOPS_ADMIN_TOKEN=$(openssl rand -hex 24) NEURALOPS_JOURNAL_KEY=$(openssl ra
 bun src/index.ts
 ```
 
-**3. Register one approver and one persona, and add one policy (5 min).** The commands are in the [setup guide](../mini-services/neuralops-mcp/integrations/nexus/README.md). Example policy: `odoo.write/production → agent.<you>`.
+**3. Register one approver and one persona, and set the rulebook (5 min).** The commands are in the [setup guide](../mini-services/neuralops-mcp/integrations/nexus/README.md). One call sets sensible policies: `POST /api/presets/nexus-default/apply {"approver":"agent.<you>"}`. Add `NEURALOPS_WEBHOOK_URL` to be pinged when an approval is waiting.
 
 **4. Add the guard to `nexus-ai` (15 min).** Copy `neuralops_guard.py` into `nexus-ai` and pass `process_tool_call=guard.process_tool_call` wherever the persona's MCP toolsets are built. Use the persona's NeuralOps token.
 
@@ -129,7 +133,7 @@ The rules: no edits without a claimed task; no edits to files someone else has r
 | Tamper-evident audit | Signed journal, hash chain, replay check | Git history; optional signed exports | Not mentioned |
 | Verified evidence (CI, not the agent's claim) | Yes | Not mentioned | Not mentioned |
 | Messaging and search | Typed questions and proposals only | Rich threads, full-text and semantic search | Yes |
-| Maturity | V0.1.4, no outside users yet | About 2.1k GitHub stars | Built into Claude Code |
+| Maturity | V0.1.5, no outside users yet | About 2.1k GitHub stars | Built into Claude Code |
 
 "Not mentioned" means we did not find it in their public README or site on 28 Sep 2026.
 
@@ -147,7 +151,7 @@ Positioning: Agent Mail helps agents talk; NeuralOps controls what agents can do
 
 ## Status and limits
 
-**Verified today:** 140 automated tests. They cover the protocol, authority, replay and tamper detection, HTTP and WebSocket, MCP over stdio and streamable HTTP with a real MCP SDK client, file reservations, the kill switch, the Claude/Codex/Gemini hooks run as real processes, and the Python guard run against a live core, including a real pydantic-ai agent whose tool must not run before approval. TypeScript and lint are clean.
+**Verified today:** 148 automated tests. They cover the protocol, authority, replay and tamper detection, HTTP and WebSocket, MCP over stdio and streamable HTTP with a real MCP SDK client, file reservations, the kill switch, the Claude/Codex/Gemini hooks run as real processes, and the Python guard run against a live core, including a real pydantic-ai agent whose tool must not run before approval. TypeScript and lint are clean.
 
 **Known limits**
 
@@ -157,7 +161,7 @@ Positioning: Agent Mail helps agents talk; NeuralOps controls what agents can do
 - Nexus users are not mapped automatically, and identity ids use the `agent.<name>` format, for people too.
 - Prompt-injection flagging is a heuristic: it marks likely instructions but cannot catch every attack.
 
-**Next:** time-boxed and batch approvals, outgoing webhooks for approval requests, automatic Nexus user mapping, a database-backed journal, and multi-workspace (one per Nexus workspace).
+**Next:** hook blocks and human feedback in the ledger, a trust-metrics page, a policy simulator, budget gates fed by LiteLLM cost data, time-boxed and batch approvals, automatic Nexus user mapping, a database-backed journal, and multi-workspace (one per Nexus workspace).
 
 ## Feedback we need
 

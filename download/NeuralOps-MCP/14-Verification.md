@@ -1,4 +1,4 @@
-# NeuralOps MCP — Verification Status (V0.1.4)
+# NeuralOps MCP — Verification Status (V0.1.5)
 
 > V0.1 ki verification mein "Lint 0 errors" aur "all golden path steps work" likha tha, lekin `tsc` ke 26 errors, lint ke 7 errors, aur 2 act types crash karte thay. V0.1.1 mein har claim neeche wale command se dobara check ho sakta hai.
 
@@ -7,7 +7,7 @@
 | Check | Command | Result |
 |-------|---------|--------|
 | Backend types | `cd mini-services/neuralops-mcp && bun run typecheck` | ✅ 0 errors |
-| Backend tests | `bun test` | ✅ 140 pass, 0 fail |
+| Backend tests | `bun test` | ✅ 148 pass, 0 fail |
 | Frontend types | `bunx tsc --noEmit` (root) | ✅ 0 errors |
 | Lint | `bun run lint` (root, whole project) | ✅ 0 errors |
 | Build | `bunx next build` | ✅ compiled, 0 warnings |
@@ -25,6 +25,7 @@
 | `reservations.test.ts` | 26 | Glob overlap, reservation rules, lifecycle (complete/release/handoff/revoke), replay, HTTP, git pre-commit in a real repo, Claude, Codex and Gemini hooks on reserved files, push and deploy |
 | `enforcement.test.ts` | 13 | gate-check CLI exit codes, report-evidence (CI = verified), Claude Code hook: edit / push / deploy / unreachable core / frozen workspace |
 | `nexus.test.ts` | 11 | `perform` rules, veto, wildcard policy, flagged approval detail, freeze + restart + replay, freeze API, `/mcp` with a real MCP SDK client and per-persona tokens |
+| `governance.test.ts` | 8 | Approval reasons, presets (apply, update, reject, replay, admin-only API), webhook (requested/decided/frozen, signature, retry, flagged detail), audit identities (allowed reads, 403 everywhere else) |
 | `nexus-guard.test.ts` | 1 (7 Python) | `integrations/nexus/test_guard.py` against a live secure core, including a real pydantic-ai agent |
 
 ## 14.3 Browser (Playwright, real dashboard)

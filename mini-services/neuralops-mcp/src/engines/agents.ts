@@ -32,6 +32,10 @@ export const RegisterSchema = z.object({
     .max(365 * 24 * 3600)
     .optional()
     .describe('Token lifetime; omit for a non-expiring token'),
+  access: z
+    .enum(['act', 'audit'])
+    .optional()
+    .describe('"audit" = read-only identity for auditors: ledger, integrity, approvals and policies only; can never act'),
 })
 export type RegisterInput = z.input<typeof RegisterSchema>
 
@@ -115,6 +119,7 @@ export function registerAgent(
     subscriptions: ['workspace'],
     createdAt: at,
     revokedAt: null,
+    ...(input.access === 'audit' ? { access: 'audit' as const, subscriptions: [] } : {}),
   }
   const token = opts.token ?? newToken()
   const expiresAt = input.tokenTtlSeconds ? addSeconds(at, input.tokenTtlSeconds) : null

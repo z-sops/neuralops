@@ -60,6 +60,8 @@ export interface Agent {
   createdAt: string
   /** Set when an admin revokes the agent; revoked agents cannot act until re-issued a token. */
   revokedAt?: string | null
+  /** "audit" = read-only identity (e.g. a client's auditor): may read the ledger and integrity, never act. Default "act". */
+  access?: 'act' | 'audit'
 }
 
 export type TaskStatus =

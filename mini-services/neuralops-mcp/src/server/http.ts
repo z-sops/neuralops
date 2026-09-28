@@ -17,6 +17,7 @@ import { approverFor } from '../engines/authority.js'
 import { demoToken, registerAgent } from '../engines/agents.js'
 import { deletePolicy, freezeWorkspace, revokeAgent, rotateToken, setAuthority, setPolicy, unfreezeWorkspace } from '../engines/admin.js'
 import { handleMcpRequest } from '../mcp/http.js'
+import { PRESETS, applyPreset, getPreset } from '../engines/presets.js'
 import { gateStatus } from '../engines/gate.js'
 import { activeReservations, checkPaths } from '../engines/reservations.js'
 import { genesis, verifyIntegrity, type JournalFile } from '../engines/replay.js'
@@ -80,6 +81,15 @@ export function snapshotState(config?: Pick<Config, 'mode'>) {
   }
 }
 
+/** What a read-only audit identity may call. */
+export const AUDIT_READABLE = new Set(['/api/whoami', '/api/ledger', '/api/integrity', '/api/approvals', '/api/policies', '/api/freeze'])
+
+function enforceAuditScope(caller: Caller, method: string, path: string): void {
+  if (!caller.agentId || store.agents.get(caller.agentId)?.access !== 'audit') return
+  if (method === 'GET' && AUDIT_READABLE.has(path)) return
+  throw forbidden(`${caller.agentId} is a read-only audit identity: it may only GET ${[...AUDIT_READABLE].join(', ')}.`)
+}
+
 export function createHttpHandler(config: Config, deps: { journal?: JournalFile | null } = {}) {
   const limiter = config.rateLimit ? new RateLimiter(config.rateLimit.perSecond, config.rateLimit.burst) : null
 
@@ -112,7 +122,9 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
   }
 
   function callerFor(req: IncomingMessage, claimed: string | null): Caller {
-    return resolveCaller(config, bearer(req.headers.authorization), claimed)
+    const caller = resolveCaller(config, bearer(req.headers.authorization), claimed)
+    enforceAuditScope(caller, req.method || 'GET', new URL(req.url || '/', 'http://localhost').pathname)
+    return caller
   }
 
   function requireDemo(caller: Caller) {
@@ -156,6 +168,7 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
         if (mcpPath.token && !config.mcpUrlTokens) throw notFound('Tokens in the MCP URL are disabled (set NEURALOPS_MCP_URL_TOKENS=1); send Authorization: Bearer <token> to /mcp')
         const token = mcpPath.token ?? bearer(req.headers.authorization)
         const caller = resolveCaller(config, token, token ? null : header(req, 'x-agent-id'))
+        enforceAuditScope(caller, method, path)
         const body = method === 'POST' ? await readJson(req) : undefined
         return await handleMcpRequest(req, res, body, caller)
       }
@@ -179,6 +192,9 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const events = taskId ? store.ledgerForTask(taskId) : store.ledger
           return send(res, 200, events.slice(-limit).reverse())
         }
+        if (path === '/api/presets') return send(res, 200, PRESETS)
+        const pm = path.match(/^\/api\/presets\/([a-z0-9-]+)$/)
+        if (pm) return send(res, 200, getPreset(pm[1]))
         if (path === '/api/freeze') return send(res, 200, { frozen: !!store.freeze, freeze: store.freeze })
         if (path === '/api/integrity') return send(res, 200, verifyIntegrity(deps.journal))
         if (path === '/api/reservations') {
@@ -277,6 +293,13 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
           const caller = callerFor(req, null)
           requireAdmin(caller)
           return send(res, 201, { ok: true, policy: setPolicy(body, actorOf(caller)) })
+        }
+
+        const pa = path.match(/^\/api\/presets\/([a-z0-9-]+)\/apply$/)
+        if (pa) {
+          const caller = callerFor(req, null)
+          requireAdmin(caller)
+          return send(res, 200, { ok: true, ...applyPreset(pa[1], body, actorOf(caller)) })
         }
 
         if (path === '/api/admin/freeze') {
