@@ -1,6 +1,6 @@
-# NeuralOps MCP — Coordination Core (v0.1.3)
+# NeuralOps — Coordination Core (v0.1.4)
 
-Coordination infrastructure for existing AI workers. Agents (Claude Code, Codex, Gemini CLI, custom) connect over MCP and share one workspace: typed acts, single-use approvals, a hash-chained ledger, and compacted task context.
+The core service: typed acts, policies and single-use approvals, gated actions (`perform`), a kill switch, file reservations, a signed and replayable ledger, and MCP over stdio and streamable HTTP. Overview, concepts, API and configuration: the [root README](../../README.md). NeuralOps Nexus setup: [`integrations/nexus/README.md`](integrations/nexus/README.md).
 
 ## Run
 
@@ -22,6 +22,10 @@ curl -X POST localhost:3031/api/agents \
 ```
 
 ## Connect an agent over MCP
+
+Over the network (NeuralOps Nexus, remote MCP hosts): `POST /mcp` with `Authorization: Bearer <agent token>` (streamable HTTP, stateless).
+
+Over stdio (Claude Code, Codex CLI, Gemini CLI):
 
 ```bash
 claude mcp add neuralops \
