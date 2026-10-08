@@ -9,13 +9,13 @@
 //       allowed ⇔ task completed AND, if the task is gated for that scope,
 //       a clearance for complete/<scope> was recorded when it completed.
 //   any other action (e.g. "deploy"):
-//       allowed ⇔ an approved approval exists for task + action + scope
-//       (or the task recorded a clearance for it), AND any verified-evidence
+//       allowed ⇔ a usable (unexpired, unconsumed) approval exists for
+//       task + action + scope, AND any verified-evidence
 //       requirements on a matching gate are met.
 
 import { store } from '../state/store.js'
 import { notFound } from '../errors.js'
-import { findConsumableApproval, findPendingApproval, hasAuthority, policyFor, resolveApprover } from './authority.js'
+import { findConsumableApproval, findPendingApproval, hasAuthority, isUsable, policyFor, resolveApprover } from './authority.js'
 
 export interface PerformCheck {
   action: string
@@ -97,11 +97,11 @@ export function gateStatus(taskId: string, action: string, scope: string): GateS
     }
   }
 
-  if (clearance) {
-    return { ...base, allowed: true, approvalId: clearance.approvalId, reason: `${action}/${scope} cleared via ${clearance.via} by ${clearance.by}.` }
-  }
+  // A non-completion clearance is a historical receipt, never permission to
+  // perform another action. Completion above deliberately checks that receipt.
+  const now = new Date().toISOString()
   const approvals = store.approvalsForTask(taskId).filter((a) => a.action === action && a.scope === scope)
-  const approved = approvals.find((a) => a.status === 'approved')
+  const approved = approvals.find((a) => isUsable(a, now))
   if (approved) {
     return { ...base, allowed: true, approvalId: approved.id, reason: `${action}/${scope} approved by ${approved.decidedBy} (${approved.id}) for ${approved.requestedBy}.` }
   }
@@ -109,5 +109,5 @@ export function gateStatus(taskId: string, action: string, scope: string): GateS
   if (pending) {
     return { ...base, allowed: false, approvalId: pending.id, reason: `${action}/${scope} approval ${pending.id} is still pending with ${pending.approver}.` }
   }
-  return { ...base, allowed: false, reason: `No approval for ${action}/${scope} on ${taskId}. Request one with neuralops_request_approval.` }
+  return { ...base, allowed: false, reason: `No usable approval for ${action}/${scope} on ${taskId}. Request one with neuralops_request_approval.` }
 }

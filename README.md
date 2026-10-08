@@ -279,3 +279,13 @@ Issues and pull requests are welcome. Please keep `bun test`, `bun run typecheck
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Zee ([z-sops](https://github.com/z-sops)).
+
+## Approval usability hardening (N03)
+
+Non-completion gate checks now require an approved, unconsumed, unexpired approval with uses remaining. Expiry is compared as an instant and is exclusive: at `validUntil` the permission is expired. Invalid expiry timestamps or use counts fail closed. The same `isUsable` predicate governs gate checks and approval selection for actual actions.
+
+A recorded non-completion clearance is a historical receipt and cannot authorize another deploy/publish. Completed-task clearance remains historical evidence for completion/merge checks; consuming the original completion approval does not invalidate a legitimately completed task. Freeze and verified-evidence requirements remain in force.
+
+`gateStatus` is a read-only preflight, not an atomic reservation or consumption operation. Two external actions that only check the gate can still race or repeat before consumption; use the existing actor-bound `perform` workflow to consume governed permissions. This patch does not add external deployment enforcement or artifact verification.
+
+Focused regressions: `cd mini-services/neuralops-mcp && bun test tests/gate-approval.test.ts`. For environments without Bun/dependencies, Node 24+ can run `npm run test:gate:offline`. That runner evaluates the real TypeScript gate, authority and store modules in memory and substitutes only the Bun test API with Node's test API; it does not emit build files, start services, attach journal persistence or install packages. It uses experimental Node VM/type-transformation APIs. Twelve focused checks passed after eight pre-fix failures reproduced the gap. Full Bun suite, semantic typecheck, HTTP/CLI/hook flows and deployment are not verified by this focused run. See project-update.md.
