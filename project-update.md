@@ -191,3 +191,10 @@ Last updated: 2026-10-08 (Asia/Karachi)
 - Publication will update the existing NeuralOps review branch/PR with N03 and N04 together; main and Windows installations remain unchanged.
 
 - N04 syntax verification: seven changed TypeScript modules parsed/transformed successfully, and both offline CJS runners passed node --check. This is parsing, not a semantic typecheck.
+
+### N04 publication confirmation
+
+- Implementation commit: 4e1b0996f425d14ac13d095e9a72f5b44bb8b87d (12 changed/new files), published on codex/strengthen-approval-usability.
+- NeuralOps draft PR https://github.com/z-sops/neuralops/pull/1 now covers N03 approval usability and N04 persistence failure handling.
+- Follow-up log-only commits synchronize this record across NeuralOps and Jarvis review branches. Main and Windows installations remain unchanged; no merge/deployment.
+- Local standalone log synchronization resumed after workspace access recovered.
