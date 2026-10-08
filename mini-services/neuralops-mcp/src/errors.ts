@@ -1,6 +1,7 @@
 // Typed errors. `code` maps 1:1 to an HTTP status in the REST door.
 
 export type ErrorCode =
+  | 'persistence_unavailable' // 503 — outcome uncertain; restart and verify journal
   | 'invalid' // 400 — malformed envelope or payload
   | 'unauthenticated' // 401 — no / bad token
   | 'forbidden' // 403 — identity known, not allowed
@@ -10,6 +11,7 @@ export type ErrorCode =
   | 'rate_limited' // 429
 
 export const HTTP_STATUS: Record<ErrorCode, number> = {
+  persistence_unavailable: 503,
   invalid: 400,
   unauthenticated: 401,
   forbidden: 403,
@@ -26,6 +28,13 @@ export class NeuralOpsError extends Error {
   ) {
     super(message)
     this.name = 'NeuralOpsError'
+  }
+}
+
+export class PersistenceError extends NeuralOpsError {
+  constructor() {
+    super('persistence_unavailable', 'Journal persistence failed; the last operation may already be on disk. Further mutations and gate clearance are blocked. Restart and verify the journal before recovery; do not blindly retry.')
+    this.name = 'PersistenceError'
   }
 }
 

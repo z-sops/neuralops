@@ -210,7 +210,7 @@ function attestation(agentId: string, type: string): { verified: boolean; verifi
 
 // ---------------------------------------------------------------- dispatcher
 
-export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult {
+function processActInternal(input: unknown, opts: ProcessOptions = {}): ActResult {
   const parsed = ActSchema.safeParse(input)
   if (!parsed.success) {
     return {
@@ -1152,4 +1152,13 @@ const HANDLERS: { [K in ActType]: Handler<K> } = {
   subscribe: handleSubscribe,
   unsubscribe: handleUnsubscribe,
   ack: handleAck,
+}
+
+/** Public mutation boundary includes counters, views and observer delivery. */
+export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult {
+  try { return store.transaction(() => processActInternal(input, opts)) }
+  catch (error) {
+    const err = error instanceof NeuralOpsError ? error : new NeuralOpsError('invalid', (error as Error).message)
+    return { ok: false, act: null, ledgerEvent: null, approval: null, stateChanged: false, error: err.message, errorCode: err.code }
+  }
 }

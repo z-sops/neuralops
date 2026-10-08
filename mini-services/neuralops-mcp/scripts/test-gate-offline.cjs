@@ -5,7 +5,7 @@ const { readFileSync } = require('node:fs');
 const { resolve, dirname } = require('node:path');
 const { stripTypeScriptTypes } = require('node:module');
 const vm = require('node:vm');
-const context = vm.createContext({ console, Date, Map, Set, JSON });
+const context = vm.createContext({ console, Date, Map, Set, JSON, structuredClone });
 const modules = new Map();
 function builtin(name) {
   if (modules.has(name)) return modules.get(name);

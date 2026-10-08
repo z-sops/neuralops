@@ -34,6 +34,7 @@ export interface PerformCheck {
 
 /** What `perform` would do right now, without recording or consuming anything. */
 export function performCheck(agentId: string, action: string, scope: string, taskId: string | null): PerformCheck {
+  store.assertWritable()
   const policy = policyFor(action, scope)
   const now = new Date().toISOString()
   return {
@@ -65,6 +66,10 @@ export function gateStatus(taskId: string, action: string, scope: string): GateS
   if (!task) throw notFound(`Task ${taskId} not found`)
   const evidence = store.evidenceForTask(taskId).map((e) => ({ type: e.type, verified: e.verified }))
   const base = { taskId, action, scope, taskStatus: task.status, evidence, approvalId: null as string | null }
+
+  if (store.persistenceFailure) {
+    return { ...base, allowed: false, reason: 'Journal persistence failed; outcome uncertain. Restart and verify the journal before further clearance.' }
+  }
 
   if (store.freeze) {
     const f = store.freeze
