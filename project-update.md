@@ -54,7 +54,7 @@ Last updated: 2026-10-08 (Asia/Karachi)
 
 | ID | Gap found through code inspection | Proposed adjustment | Benefit | Status |
 | --- | --- | --- | --- | --- |
-| N01 | Orbit uses one saved connector token; upstream ignores the actor option and does not send delegated worker identity. | Map each worker to a NeuralOps identity and use its existing broker/delegate mechanism; reject missing/revoked mappings. | Correct ownership, actor history and separation of permissions. | Implemented on the review branch; 17 focused checks pass. Real-service verification and upstream actor-authentication hardening remain pending. |
+| N01 | Orbit uses one saved connector token; upstream ignores the actor option and does not send delegated worker identity. | Map each worker to a NeuralOps identity and use its existing broker/delegate mechanism; reject missing/revoked mappings. | Correct ownership, actor history and separation of permissions. | Implemented on the review branch; 17 focused checks pass. Actor-authentication hardening follows in F02 below; real-service verification remains pending. |
 | N02 | Inspected Orbit gateway does not automatically require NeuralOps clearance before other connector actions. | Enforce relevant checks in actual execution paths and synchronize Orbit jobs with NeuralOps tasks. | Guidance applies consistently instead of depending on model cooperation. | Proposed; scope and approval pending. |
 | N03 | gateStatus for non-completion actions accepts approved status without checking expiry or consumption. | Use consistent approval usability checks and review clearance semantics. | Expired/exhausted permissions do not clear future actions. | Implemented for N03 with 12 focused offline regressions passing; full integration pending. |
 | N04 | Journal write exceptions are logged and swallowed while live state may already change. | Propagate persistence failures and design safe state/acknowledgment handling. | Avoid reporting an operation as durably saved when disk persistence failed. | Static finding; design and approval pending. |
@@ -113,9 +113,9 @@ Last updated: 2026-10-08 (Asia/Karachi)
 ## Remaining boundaries and next proposals
 
 - F02: actor-bound gateway authentication is now implemented with focused in-memory verification. Credential theft through unrestricted local filesystem access remains outside this change.
-- N02, N04-N06 remain proposed, not implemented; N03 is recorded below: mandatory NeuralOps gating, approval gate expiry/consumption, journal failure propagation, evidence integration and actual economy telemetry.
+- N02, N04-N06 remain proposed, not implemented: mandatory NeuralOps gating, journal failure propagation, evidence integration and actual economy telemetry. N03 is recorded below.
 - OpenCode and built-in workers gain no new connector access in this change.
-- Next proposal: strengthen NeuralOps approval expiry/consumption checks (N03); explain the specific change and benefit and obtain approval before implementation.
+- N03 was subsequently authorized and implemented below. The next independent change needs its own gap/change/benefit explanation and approval.
 
 
 ## Repository publication
@@ -158,3 +158,9 @@ Last updated: 2026-10-08 (Asia/Karachi)
 - Bun is unavailable. Full Bun suite, semantic TypeScript checking, actual processAct/journal replay, HTTP/CLI/hook flows and Windows execution remain unverified. No packages installed, paid calls, sockets, child workers, production state mutation, merge or deployment.
 - Boundary: gateStatus remains read-only and does not reserve or consume permission. Check-only external actions can race or repeat before consumption; existing actor-bound perform consumes governed permissions. Mandatory external enforcement and artifact verification are separate proposed work.
 - Publish target: a separate NeuralOps review branch/draft PR; Jarvis review source is unchanged by N03. Publication confirmation follows.
+
+### N03 publication confirmation
+
+- Implementation commit: e9398d62d07e78e97fd1b3bfd05d2bc5d75fc381 (seven changed/new files) on codex/strengthen-approval-usability. Branch update succeeded.
+- NeuralOps draft review PR: https://github.com/z-sops/neuralops/pull/1. Main is unchanged; no merge/deployment performed.
+- Follow-up log-only commits synchronize this record to the NeuralOps and Jarvis review branches. Windows installations remain unchanged.
