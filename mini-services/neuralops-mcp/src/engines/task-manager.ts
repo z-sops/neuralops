@@ -20,6 +20,7 @@ import {
 } from '../protocol/payloads.js'
 import type { Approval, Clearance, Gate, LedgerEvent, Reservation, Task, TaskStatus } from '../state/types.js'
 import { normalizePath } from './paths.js'
+import { managedDetail, validateManagedAction } from './managed-action.js'
 import { conflictsFor, describeReservation, isActiveReservation } from './reservations.js'
 import {
   NeuralOpsError,
@@ -210,7 +211,7 @@ function attestation(agentId: string, type: string): { verified: boolean; verifi
 
 // ---------------------------------------------------------------- dispatcher
 
-export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult {
+function processActInternal(input: unknown, opts: ProcessOptions = {}): ActResult {
   const parsed = ActSchema.safeParse(input)
   if (!parsed.success) {
     return {
@@ -976,9 +977,11 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   const taskId = p.taskId ?? act.taskId ?? null
   const task = taskId ? requireTask(taskId) : null
   const what = `${p.action}/${p.scope}${p.target ? ` (${p.target})` : ''}`
-  const detail = [p.target, p.detail].filter(Boolean).join(': ') || undefined
+  if (!p.binding && task?.constraints.some(c => c.startsWith('orbit.job:'))) throw forbidden('Managed task actions require an Orbit binding.')
+  if (p.binding) validateManagedAction(act.from, task, p.action, p.scope, p.target, p.binding)
+  const detail = p.binding ? managedDetail(p.binding) : [p.target, p.detail].filter(Boolean).join(': ') || undefined
   const done = (via: string, extra: Record<string, unknown>, summary: string, refs: string[] = []): HandlerOut => {
-    const evt = record(act, task, {}, { performed: true, action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, summary, refs)
+    const evt = record(act, task, {}, { performed: !p.binding, ...(p.binding ? { authorized: true, phase: 'authorization', binding: p.binding } : {}), action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, p.binding ? `${act.from} authorized to attempt ${what} via ${via}; execution outcome not yet reported` : summary, refs)
     return { ledgerEvent: evt, approval: null, stateChanged: true, allowed: true, via, message: `Allowed: ${what} (${via}). Go ahead.` }
   }
 
@@ -987,15 +990,18 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   }
   const policy = policyFor(p.action, p.scope)
   if (!policy) {
+    if (p.binding) throw forbidden('Managed actions require a governing policy or explicit direct authority.')
     return done('ungoverned', {}, `${act.from} performed ${what} (no policy governs it)`)
   }
-  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId, act.timestamp)
+  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId, act.timestamp, p.binding ? detail : undefined)
   if (granted) {
+    if (p.binding && (granted.usesLeft !== undefined && granted.usesLeft !== 1)) throw forbidden('Managed approval must be single-use.')
+    if (p.binding && (!granted.decidedBy?.startsWith('human.') || !store.agents.has(granted.decidedBy))) throw forbidden('Managed approval requires a human decision.')
     consumeApproval(granted, act.id, act.timestamp)
     const out = done('approval', { approvalId: granted.id }, `${act.from} performed ${what} with ${granted.id} (approved by ${granted.decidedBy})`, [granted.id])
     return { ...out, approval: granted }
   }
-  const existing = findPendingApproval(act.from, p.action, p.scope, taskId)
+  const existing = findPendingApproval(act.from, p.action, p.scope, taskId, p.binding ? detail : undefined)
   if (existing) {
     return {
       ledgerEvent: null,
@@ -1123,7 +1129,50 @@ const handleAck: Handler<'ack'> = (act, p) => {
 
 // ---------------------------------------------------------------- registry
 
+const handleJobOutcome: Handler<'job_outcome'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'report a client outcome')
+  requireOwner(task, act.from, 'report a client outcome')
+  requireNoPendingHandoff(task, 'report a client outcome')
+  if (!task.constraints.includes(`orbit.job:${p.jobId}`) || !task.constraints.includes(`orbit.run:${p.runId}`)) throw forbidden('Client outcome job/run does not match the managed task')
+  const previous = task.clientOutcome
+  if (!previous) {
+    if (p.sequence !== 1 || !['review', 'failed', 'cancelled', 'interrupted'].includes(p.state)) throw conflict('The first client outcome must be review, failed, cancelled or interrupted')
+    if (task.status !== 'in_progress') throw conflict('The managed task must be in progress for its first outcome')
+  } else {
+    if (previous.jobId !== p.jobId || previous.runId !== p.runId || previous.reportedBy !== act.from || previous.sequence !== 1 || previous.state !== 'review' || p.sequence !== 2 || !['accepted_locally', 'rejected_locally'].includes(p.state)) throw conflict('Invalid client outcome transition')
+    if (task.status !== 'blocked') throw conflict('Remote task changed after the client review report; reconcile it manually')
+    if (p.reportSha256 !== previous.reportSha256) throw conflict('Local review must refer to the same worker report')
+  }
+  if (p.state === 'accepted_locally' && p.verification === 'failed') throw conflict('Failed output checks cannot be accepted')
+  const before = { status: task.status, clientOutcome: task.clientOutcome ?? null }
+  const { taskId: _taskId, ...outcome } = p
+  task.clientOutcome = { ...outcome, reportedBy: act.from, actId: act.id, at: act.timestamp, verified: false }
+  task.status = 'blocked'
+  task.blockedReason = `Orbit client reported ${p.state}. Reconcile before remote completion; local review is not a remote authorization.`
+  task.updatedAt = act.timestamp
+  const released = releaseTaskReservations(task, act.from, act.timestamp, 'Orbit job execution ended')
+  const evt = record(act, task, before, { status: task.status, clientOutcome: task.clientOutcome, remoteApproval: false, remoteCompletion: false, releasedReservations: released }, `${act.from} reported Orbit ${p.state} (client claim, unverified)`, released)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
+
+/** Read-only receipt lookup. Exact actor/task match, even for unscoped callers. */
+export function jobOutcomeReceipt(actor: string, taskId: string, actId: string) {
+  store.assertWritable() // uncertain journal/head writes cannot produce a success receipt
+  const agent = store.agents.get(actor)
+  if (!agent || agent.revokedAt) throw forbidden('A registered active identity is required')
+  const task = requireTask(taskId)
+  if (task.workspaceId !== agent.workspaceId) throw forbidden('Task belongs to another workspace')
+  const act = store.acts.get(actId)
+  if (!act) return null
+  if (act.type !== 'job_outcome' || act.from !== actor || act.taskId !== taskId) throw forbidden('Outcome receipt belongs to another task or identity')
+  const event = store.ledger.find(e => e.actId === actId)
+  if (!event) throw conflict('Outcome receipt has no durable ledger record')
+  return { actId: act.id, from: act.from, payload: clone(act.payload), ledgerHash: event.hash }
+}
+
 const HANDLERS: { [K in ActType]: Handler<K> } = {
+  job_outcome: handleJobOutcome,
   create_task: handleCreateTask,
   claim: handleClaim,
   release: handleRelease,
@@ -1152,4 +1201,13 @@ const HANDLERS: { [K in ActType]: Handler<K> } = {
   subscribe: handleSubscribe,
   unsubscribe: handleUnsubscribe,
   ack: handleAck,
+}
+
+/** Public mutation boundary includes counters, views and observer delivery. */
+export function processAct(input: unknown, opts: ProcessOptions = {}): ActResult {
+  try { return store.transaction(() => processActInternal(input, opts)) }
+  catch (error) {
+    const err = error instanceof NeuralOpsError ? error : new NeuralOpsError('invalid', (error as Error).message)
+    return { ok: false, act: null, ledgerEvent: null, approval: null, stateChanged: false, error: err.message, errorCode: err.code }
+  }
 }

@@ -75,7 +75,8 @@ export function findPendingApproval(
   requestedBy: string,
   action: string,
   scope: string,
-  taskId: string | null
+  taskId: string | null,
+  exactDetail?: string
 ): Approval | null {
   for (const a of store.approvals.values()) {
     if (
@@ -83,7 +84,8 @@ export function findPendingApproval(
       a.requestedBy === requestedBy &&
       a.action === action &&
       a.scope === scope &&
-      a.taskId === taskId
+      a.taskId === taskId &&
+      (exactDetail === undefined || a.detail === exactDetail)
     )
       return a
   }
@@ -91,9 +93,13 @@ export function findPendingApproval(
 }
 
 /** Still usable at `at`: approved, uses left, not expired. */
-export function isUsable(a: Approval, at?: string): boolean {
+export function isUsable(a: Approval, at: string = new Date().toISOString()): boolean {
   if (a.status !== 'approved' || a.consumedAt !== null) return false
-  if (a.validUntil && at && at > a.validUntil) return false
+  if (a.usesLeft !== undefined && (!Number.isSafeInteger(a.usesLeft) || a.usesLeft <= 0)) return false
+  if (a.validUntil != null) {
+    const expires = Date.parse(a.validUntil), now = Date.parse(at)
+    if (!Number.isFinite(expires) || !Number.isFinite(now) || now >= expires) return false
+  }
   return true
 }
 
@@ -103,7 +109,8 @@ export function findConsumableApproval(
   action: string,
   scope: string,
   taskId: string | null,
-  at?: string
+  at?: string,
+  exactDetail?: string
 ): Approval | null {
   for (const a of store.approvals.values()) {
     if (
@@ -111,7 +118,8 @@ export function findConsumableApproval(
       a.requestedBy === requestedBy &&
       a.action === action &&
       a.scope === scope &&
-      a.taskId === taskId
+      a.taskId === taskId &&
+      (exactDetail === undefined || a.detail === exactDetail)
     )
       return a
   }

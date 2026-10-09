@@ -12,7 +12,9 @@
     "gate-check": "bun src/cli/gate-check.ts",
     "report-evidence": "bun src/cli/report-evidence.ts",
     "hook:claude": "bun src/hooks/claude-pretooluse.ts",
-    "install-git-hook": "bun src/cli/install-git-hook.ts"
+    "install-git-hook": "bun src/cli/install-git-hook.ts",
+    "test:gate:offline": "node --experimental-vm-modules scripts/test-gate-offline.cjs",
+    "test:persistence:offline": "node --experimental-vm-modules scripts/test-persistence-offline.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",

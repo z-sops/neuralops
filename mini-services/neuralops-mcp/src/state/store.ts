@@ -7,6 +7,7 @@
 // Ids are deterministic (per-prefix counters) so replay reproduces them exactly.
 
 import { createHash } from 'node:crypto'
+import { PersistenceError } from '../errors.js'
 import type {
   Agent,
   Approval,
@@ -105,6 +106,60 @@ export class Store {
   private journalListeners: JournalListener[] = []
   /** While muted (replay, integrity check) nothing is broadcast or persisted. */
   muted = false
+  // Process-local latch: reset/replay/import cannot hide an uncertain disk write.
+  private persistenceFailed = false
+  private transactionActive = false
+  private pendingLedger: LedgerEvent[] = []
+  private pendingSnapshot = false
+
+  get persistenceFailure(): boolean { return this.persistenceFailed }
+  assertWritable(): void {
+    if (this.persistenceFailed) throw new PersistenceError()
+  }
+  failPersistence(): never {
+    this.persistenceFailed = true
+    throw new PersistenceError()
+  }
+
+  /** Sync mutation boundary. Disk effects are NOT rolled back on failure. */
+  transaction<T>(fn: () => T): T {
+    if (this.muted) return fn() // trusted internal replay only
+    this.assertWritable()
+    if (this.transactionActive) return fn()
+    const before = this.exportData()
+    this.transactionActive = true
+    this.pendingLedger = []
+    this.pendingSnapshot = false
+    let result: T
+    try {
+      result = fn()
+      this.assertWritable() // a caller may have caught a failed journal write
+    } catch (error) {
+      this.importData(before)
+      this.pendingLedger = []
+      this.pendingSnapshot = false
+      throw error
+    } finally {
+      this.transactionActive = false
+    }
+    const events = this.pendingLedger, snapshot = this.pendingSnapshot
+    this.pendingLedger = []
+    this.pendingSnapshot = false
+    for (const event of events) this.notifyLedger(event)
+    if (snapshot) this.notifySnapshot()
+    return result
+  }
+
+  private notifyLedger(event: LedgerEvent): void {
+    for (const fn of this.ledgerListeners) {
+      try { fn(event) } catch { console.error('[neuralops] ledger observer failed') }
+    }
+  }
+  private notifySnapshot(): void {
+    for (const fn of this.snapshotListeners) {
+      try { fn() } catch { console.error('[neuralops] snapshot observer failed') }
+    }
+  }
 
   get workspaces() { return this.d.workspaces }
   get agents() { return this.d.agents }
@@ -175,7 +230,10 @@ export class Store {
     }
     const event: LedgerEvent = { ...body, hash: hashLedgerBody(body) }
     this.d.ledger.push(event)
-    if (!this.muted) for (const fn of this.ledgerListeners) fn(event)
+    if (!this.muted) {
+      if (this.transactionActive) this.pendingLedger.push(event)
+      else this.notifyLedger(event)
+    }
     return event
   }
 
@@ -193,8 +251,12 @@ export class Store {
 
   // ---- journal ----
   journalAppend(rec: JournalRecord): void {
+    if (!this.muted) {
+      this.assertWritable()
+      try { for (const fn of this.journalListeners) fn(rec) }
+      catch { this.failPersistence() }
+    }
     this.d.journal.push(rec)
-    if (!this.muted) for (const fn of this.journalListeners) fn(rec)
   }
 
   // ---- listeners ----
@@ -212,7 +274,10 @@ export class Store {
   }
   /** Tell observers the whole state changed (reset, reseed, replay). */
   broadcastSnapshot(): void {
-    if (!this.muted) for (const fn of this.snapshotListeners) fn()
+    if (!this.muted) {
+      if (this.transactionActive) this.pendingSnapshot = true
+      else this.notifySnapshot()
+    }
   }
 
   // ---- queries ----

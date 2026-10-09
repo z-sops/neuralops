@@ -187,6 +187,13 @@ export const PerformPayload = z.object({
   taskId: id.optional().describe('Task this action belongs to, if any'),
   target: text(200).optional().describe('The tool or resource, e.g. "odoo/create_invoice"'),
   detail: text(1000).optional().describe('Exactly what will happen (tool arguments), shown to the approver'),
+  binding: z.object({
+    version: z.literal('orbit-v1'),
+    jobId: z.string().regex(/^job-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
+    runId: z.string().uuid(),
+    tool: text(200),
+    argumentsSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().optional().describe('Managed Orbit action: exact job, run, tool and arguments fingerprint'),
 })
 
 const Uses = z.number().int().min(1).max(1000)
@@ -240,6 +247,19 @@ export const UnsubscribePayload = SubscribePayload
 
 export const AckPayload = z.object({ actId: id })
 
+export const JobOutcomePayload = z.object({
+  taskId: id,
+  version: z.literal('orbit-v1'),
+  jobId: z.string().regex(/^job-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/),
+  runId: z.string().uuid(),
+  sequence: z.number().int().min(1).max(2),
+  state: z.enum(['review', 'failed', 'cancelled', 'interrupted', 'accepted_locally', 'rejected_locally']),
+  verification: z.enum(['unverified', 'files_checked', 'failed']),
+  reportSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  artifactsSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  artifactCount: z.number().int().min(0).max(20),
+}).strict()
+
 // ---- registry ----
 export const PAYLOAD_SCHEMAS = {
   create_task: CreateTaskPayload,
@@ -265,6 +285,7 @@ export const PAYLOAD_SCHEMAS = {
   perform: PerformPayload,
   grant_approval: GrantApprovalPayload,
   report_block: ReportBlockPayload,
+  job_outcome: JobOutcomePayload,
   deny: DenyPayload,
   escalate: EscalatePayload,
   subscribe: SubscribePayload,

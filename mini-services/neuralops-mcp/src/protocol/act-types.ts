@@ -41,6 +41,7 @@ export const ACT_FAMILY = {
   perform: 'authority',
   grant_approval: 'authority',
   report_block: 'lifecycle',
+  job_outcome: 'lifecycle',
   subscribe: 'lifecycle',
   unsubscribe: 'lifecycle',
   ack: 'lifecycle',
@@ -106,6 +107,7 @@ export const ACT_DESCRIPTION: Record<ActType, string> = {
     'Approve in advance: let another identity perform action/scope up to `uses` times within `validForSeconds` (e.g. a scheduled persona run nobody watches). Only someone who could approve such a request may grant it, and never to themselves.',
   report_block:
     'Record that an enforcer (a pre-tool hook, the git pre-commit hook, the guard or CI) stopped this agent, and why. Sent automatically by the NeuralOps hooks so blocks show up in the ledger.',
+  job_outcome: 'Record a bound Orbit client outcome and pause its task. Local acceptance is an AI-reported claim, not remote approval, verified evidence or task completion.',
   escalate: 'Escalate a task to another agent. The task becomes blocked and the target may take it over by claiming it.',
   subscribe: 'Subscribe to a task, `workspace`, or `role:<name>`.',
   unsubscribe: 'Unsubscribe from a task, `workspace`, or `role:<name>`.',

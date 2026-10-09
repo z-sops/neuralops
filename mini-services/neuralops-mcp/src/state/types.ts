@@ -94,6 +94,14 @@ export interface HandoffRecord {
 }
 
 export interface Task {
+  /** Client claims only. Never treated as remote approval or verified evidence. */
+  clientOutcome?: {
+    version: 'orbit-v1'; jobId: string; runId: string; sequence: number;
+    state: 'review' | 'failed' | 'cancelled' | 'interrupted' | 'accepted_locally' | 'rejected_locally';
+    verification: 'unverified' | 'files_checked' | 'failed';
+    reportSha256: string; artifactsSha256: string; artifactCount: number;
+    reportedBy: string; actId: string; at: string; verified: false;
+  }
   id: string
   workspaceId: string
   title: string
