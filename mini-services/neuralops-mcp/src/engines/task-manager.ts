@@ -20,6 +20,7 @@ import {
 } from '../protocol/payloads.js'
 import type { Approval, Clearance, Gate, LedgerEvent, Reservation, Task, TaskStatus } from '../state/types.js'
 import { normalizePath } from './paths.js'
+import { managedDetail, validateManagedAction } from './managed-action.js'
 import { conflictsFor, describeReservation, isActiveReservation } from './reservations.js'
 import {
   NeuralOpsError,
@@ -976,9 +977,11 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   const taskId = p.taskId ?? act.taskId ?? null
   const task = taskId ? requireTask(taskId) : null
   const what = `${p.action}/${p.scope}${p.target ? ` (${p.target})` : ''}`
-  const detail = [p.target, p.detail].filter(Boolean).join(': ') || undefined
+  if (!p.binding && task?.constraints.some(c => c.startsWith('orbit.job:'))) throw forbidden('Managed task actions require an Orbit binding.')
+  if (p.binding) validateManagedAction(act.from, task, p.action, p.scope, p.target, p.binding)
+  const detail = p.binding ? managedDetail(p.binding) : [p.target, p.detail].filter(Boolean).join(': ') || undefined
   const done = (via: string, extra: Record<string, unknown>, summary: string, refs: string[] = []): HandlerOut => {
-    const evt = record(act, task, {}, { performed: true, action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, summary, refs)
+    const evt = record(act, task, {}, { performed: !p.binding, ...(p.binding ? { authorized: true, phase: 'authorization', binding: p.binding } : {}), action: p.action, scope: p.scope, target: p.target ?? null, via, ...extra }, p.binding ? `${act.from} authorized to attempt ${what} via ${via}; execution outcome not yet reported` : summary, refs)
     return { ledgerEvent: evt, approval: null, stateChanged: true, allowed: true, via, message: `Allowed: ${what} (${via}). Go ahead.` }
   }
 
@@ -987,15 +990,18 @@ const handlePerform: Handler<'perform'> = (act, p) => {
   }
   const policy = policyFor(p.action, p.scope)
   if (!policy) {
+    if (p.binding) throw forbidden('Managed actions require a governing policy or explicit direct authority.')
     return done('ungoverned', {}, `${act.from} performed ${what} (no policy governs it)`)
   }
-  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId, act.timestamp)
+  const granted = findConsumableApproval(act.from, p.action, p.scope, taskId, act.timestamp, p.binding ? detail : undefined)
   if (granted) {
+    if (p.binding && (granted.usesLeft !== undefined && granted.usesLeft !== 1)) throw forbidden('Managed approval must be single-use.')
+    if (p.binding && (!granted.decidedBy?.startsWith('human.') || !store.agents.has(granted.decidedBy))) throw forbidden('Managed approval requires a human decision.')
     consumeApproval(granted, act.id, act.timestamp)
     const out = done('approval', { approvalId: granted.id }, `${act.from} performed ${what} with ${granted.id} (approved by ${granted.decidedBy})`, [granted.id])
     return { ...out, approval: granted }
   }
-  const existing = findPendingApproval(act.from, p.action, p.scope, taskId)
+  const existing = findPendingApproval(act.from, p.action, p.scope, taskId, p.binding ? detail : undefined)
   if (existing) {
     return {
       ledgerEvent: null,

@@ -75,7 +75,8 @@ export function findPendingApproval(
   requestedBy: string,
   action: string,
   scope: string,
-  taskId: string | null
+  taskId: string | null,
+  exactDetail?: string
 ): Approval | null {
   for (const a of store.approvals.values()) {
     if (
@@ -83,7 +84,8 @@ export function findPendingApproval(
       a.requestedBy === requestedBy &&
       a.action === action &&
       a.scope === scope &&
-      a.taskId === taskId
+      a.taskId === taskId &&
+      (exactDetail === undefined || a.detail === exactDetail)
     )
       return a
   }
@@ -107,7 +109,8 @@ export function findConsumableApproval(
   action: string,
   scope: string,
   taskId: string | null,
-  at?: string
+  at?: string,
+  exactDetail?: string
 ): Approval | null {
   for (const a of store.approvals.values()) {
     if (
@@ -115,7 +118,8 @@ export function findConsumableApproval(
       a.requestedBy === requestedBy &&
       a.action === action &&
       a.scope === scope &&
-      a.taskId === taskId
+      a.taskId === taskId &&
+      (exactDetail === undefined || a.detail === exactDetail)
     )
       return a
   }

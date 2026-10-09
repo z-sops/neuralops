@@ -181,7 +181,7 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         parseArgs(name, args)
         const id = requireAgent(caller)
         const agent = store.agents.get(id)!
-        return { ok: true, result: { agent, via: caller.via } }
+        return { ok: true, result: { agent, via: caller.via, capabilities: { managedJobs: 'orbit-v1' } } }
       }
       case 'neuralops_register': {
         if (!caller.isAdmin && caller.via !== 'impersonated') {
