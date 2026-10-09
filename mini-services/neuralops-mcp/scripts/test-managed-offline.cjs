@@ -20,7 +20,7 @@ function source(file) {
   modules.set(file, mod); return mod;
 }
 (async () => {
-  const test = source(resolve(__dirname, '../tests/managed-action.test.ts'));
+  const test = source(resolve(__dirname, '../tests', process.argv[2] || 'managed-action.test.ts'));
   await test.link((specifier, parent) => {
     if (specifier === 'bun:test' || specifier === 'zod' || specifier.startsWith('node:')) return builtin(specifier);
     return source(resolve(dirname(parent.identifier), specifier.replace(/\.js$/, '.ts')));

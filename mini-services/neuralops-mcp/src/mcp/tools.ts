@@ -8,7 +8,7 @@
 // src/mcp/stdio.ts — a real MCP stdio transport for Claude Code, Codex, etc.
 
 import { z } from 'zod'
-import { processAct, type ActResult } from '../engines/task-manager.js'
+import { processAct, jobOutcomeReceipt, type ActResult } from '../engines/task-manager.js'
 import {
   getCompactedContext,
   getDecisionById,
@@ -73,6 +73,7 @@ function withEnvelopeExtras(s: Record<string, unknown>): Record<string, unknown>
 
 const QUERY_SCHEMAS = {
   neuralops_whoami: z.object({}),
+  neuralops_job_receipt: z.object({ taskId: z.string().min(1).max(128), actId: z.string().min(1).max(128) }).strict(),
   neuralops_register: RegisterSchema,
   neuralops_workspace: z.object({}),
   neuralops_tasks: z.object({
@@ -111,6 +112,7 @@ const QUERY_SCHEMAS = {
 type QueryTool = keyof typeof QUERY_SCHEMAS
 
 const QUERY_DESCRIPTIONS: Record<QueryTool, string> = {
+  neuralops_job_receipt: 'Read a durable client-outcome receipt for your identity/task, or null if absent. Check before explicitly retrying an uncertain delivery.',
   neuralops_whoami: 'Who you are in this workspace: agent record, direct authority, and reporting line.',
   neuralops_register:
     'Register a new AI worker. Admin only in secure mode. Returns the agent and its bearer token (shown once).',
@@ -181,7 +183,12 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
         parseArgs(name, args)
         const id = requireAgent(caller)
         const agent = store.agents.get(id)!
-        return { ok: true, result: { agent, via: caller.via, capabilities: { managedJobs: 'orbit-v1' } } }
+        return { ok: true, result: { agent, via: caller.via, capabilities: { managedJobs: 'orbit-v1', jobOutcomes: 'orbit-v1' } } }
+      }
+      case 'neuralops_job_receipt': {
+        const { taskId, actId } = parseArgs(name, args)
+        checkTask(caller, taskId)
+        return { ok: true, result: { receipt: jobOutcomeReceipt(requireAgent(caller), taskId, actId) } }
       }
       case 'neuralops_register': {
         if (!caller.isAdmin && caller.via !== 'impersonated') {

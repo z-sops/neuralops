@@ -1129,7 +1129,50 @@ const handleAck: Handler<'ack'> = (act, p) => {
 
 // ---------------------------------------------------------------- registry
 
+const handleJobOutcome: Handler<'job_outcome'> = (act, p) => {
+  const task = requireTask(p.taskId)
+  requireOpen(task, 'report a client outcome')
+  requireOwner(task, act.from, 'report a client outcome')
+  requireNoPendingHandoff(task, 'report a client outcome')
+  if (!task.constraints.includes(`orbit.job:${p.jobId}`) || !task.constraints.includes(`orbit.run:${p.runId}`)) throw forbidden('Client outcome job/run does not match the managed task')
+  const previous = task.clientOutcome
+  if (!previous) {
+    if (p.sequence !== 1 || !['review', 'failed', 'cancelled', 'interrupted'].includes(p.state)) throw conflict('The first client outcome must be review, failed, cancelled or interrupted')
+    if (task.status !== 'in_progress') throw conflict('The managed task must be in progress for its first outcome')
+  } else {
+    if (previous.jobId !== p.jobId || previous.runId !== p.runId || previous.reportedBy !== act.from || previous.sequence !== 1 || previous.state !== 'review' || p.sequence !== 2 || !['accepted_locally', 'rejected_locally'].includes(p.state)) throw conflict('Invalid client outcome transition')
+    if (task.status !== 'blocked') throw conflict('Remote task changed after the client review report; reconcile it manually')
+    if (p.reportSha256 !== previous.reportSha256) throw conflict('Local review must refer to the same worker report')
+  }
+  if (p.state === 'accepted_locally' && p.verification === 'failed') throw conflict('Failed output checks cannot be accepted')
+  const before = { status: task.status, clientOutcome: task.clientOutcome ?? null }
+  const { taskId: _taskId, ...outcome } = p
+  task.clientOutcome = { ...outcome, reportedBy: act.from, actId: act.id, at: act.timestamp, verified: false }
+  task.status = 'blocked'
+  task.blockedReason = `Orbit client reported ${p.state}. Reconcile before remote completion; local review is not a remote authorization.`
+  task.updatedAt = act.timestamp
+  const released = releaseTaskReservations(task, act.from, act.timestamp, 'Orbit job execution ended')
+  const evt = record(act, task, before, { status: task.status, clientOutcome: task.clientOutcome, remoteApproval: false, remoteCompletion: false, releasedReservations: released }, `${act.from} reported Orbit ${p.state} (client claim, unverified)`, released)
+  return { ledgerEvent: evt, approval: null, stateChanged: true, task: taskView(task) }
+}
+
+/** Read-only receipt lookup. Exact actor/task match, even for unscoped callers. */
+export function jobOutcomeReceipt(actor: string, taskId: string, actId: string) {
+  store.assertWritable() // uncertain journal/head writes cannot produce a success receipt
+  const agent = store.agents.get(actor)
+  if (!agent || agent.revokedAt) throw forbidden('A registered active identity is required')
+  const task = requireTask(taskId)
+  if (task.workspaceId !== agent.workspaceId) throw forbidden('Task belongs to another workspace')
+  const act = store.acts.get(actId)
+  if (!act) return null
+  if (act.type !== 'job_outcome' || act.from !== actor || act.taskId !== taskId) throw forbidden('Outcome receipt belongs to another task or identity')
+  const event = store.ledger.find(e => e.actId === actId)
+  if (!event) throw conflict('Outcome receipt has no durable ledger record')
+  return { actId: act.id, from: act.from, payload: clone(act.payload), ledgerHash: event.hash }
+}
+
 const HANDLERS: { [K in ActType]: Handler<K> } = {
+  job_outcome: handleJobOutcome,
   create_task: handleCreateTask,
   claim: handleClaim,
   release: handleRelease,

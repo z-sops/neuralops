@@ -97,3 +97,14 @@ test('reset, import, journal load and detach cannot clear the failure latch', as
 test('successful registration, admin and genesis retain normal journal/notification behavior', async () => {
   const r = await rig(); r.agents.registerAgent({ id: 'agent.bob', name: 'Bob', model: 'Custom', role: 'qa' }, { asAdmin: true, now: AT }); r.admin.setPolicy({ action: 'deploy', scope: 'production', approver: 'human.owner' }, 'admin', AT); assert.equal(r.events.length, 2); assert.equal(r.journal.load().records.length, 3); let snapshots = 0; r.store.onSnapshot(() => snapshots++); r.replay.genesis('empty', AT); assert.equal(snapshots, 1); assert.equal(r.journal.load().records.length, 1);
 });
+test('outcome journal failure rolls back client state and suppresses a success receipt', async () => {
+  const r = await rig(); assert.equal(r.create().ok, true);
+  const task = r.store.tasks.get('task_new'); task.assignee = 'agent.alex'; task.status = 'in_progress';
+  const jobId = 'job-73d4bbef-2f69-4a1e-8fe7-448a1c99f8ee', runId = '701679a9-2b73-4291-bf8c-0bc5d7917b8c';
+  task.constraints = ['orbit.job:' + jobId, 'orbit.run:' + runId];
+  const hash = r.store.stateHash(), count = r.events.length;
+  r.fail('head-write');
+  const result = r.acts.processAct({ id: 'outcome_test', type: 'job_outcome', from: 'agent.alex', taskId: null, intent: null, references: [], payload: { taskId: task.id, version: 'orbit-v1', jobId, runId, sequence: 1, state: 'review', verification: 'unverified', reportSha256: 'a'.repeat(64), artifactsSha256: 'b'.repeat(64), artifactCount: 0 } }, { now: AT, via: 'token' });
+  assert.equal(result.ok, false); assert.equal(result.errorCode, 'persistence_unavailable'); assert.equal(r.store.stateHash(), hash); assert.equal(r.events.length, count);
+  assert.throws(() => r.acts.jobOutcomeReceipt('agent.alex', task.id, 'outcome_test'), /Journal persistence failed/);
+});
