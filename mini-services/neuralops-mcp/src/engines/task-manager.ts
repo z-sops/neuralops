@@ -1123,6 +1123,7 @@ const handleUnsubscribe: Handler<'unsubscribe'> = (act, p) => {
 const handleAck: Handler<'ack'> = (act, p) => {
   const target = store.acts.get(p.actId)
   if (!target) throw notFound(`Act ${p.actId} not found`)
+  if (['question', 'proposal', 'handoff'].includes(target.type) && typeof target.payload.to === 'string' && !isRecipient(act.from, target.payload.to)) throw forbidden('Only the addressed receiver may acknowledge this exchange.')
   const evt = record(act, target.taskId ? store.tasks.get(target.taskId) ?? null : null, {}, { acked: p.actId }, `${act.from} acked act ${p.actId}`, [p.actId])
   return { ledgerEvent: evt, approval: null, stateChanged: true }
 }

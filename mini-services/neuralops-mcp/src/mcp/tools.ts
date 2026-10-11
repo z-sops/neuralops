@@ -57,14 +57,14 @@ function jsonSchema(schema: z.ZodType): Record<string, unknown> {
   return s
 }
 
-function withEnvelopeExtras(s: Record<string, unknown>): Record<string, unknown> {
+function withEnvelopeExtras(s: Record<string, unknown>, ack = false): Record<string, unknown> {
   const props = { ...((s.properties as Record<string, unknown>) ?? {}) }
   props.references = {
     type: 'array',
     items: { type: 'string' },
     description: 'Ids this act builds on, e.g. ["decision_0001","evidence_0002"]',
   }
-  props.actId = {
+  props[ack ? 'operationId' : 'actId'] = {
     type: 'string',
     description: 'Optional idempotency key. Re-sending the same actId is rejected as a duplicate instead of applied twice.',
   }
@@ -144,7 +144,7 @@ export const TOOL_DEFS: ToolDef[] = [
   ...ACT_TYPES.map((type) => ({
     name: `${ACT_TOOL_PREFIX}${type}`,
     description: `[${ACT_FAMILY[type]}] ${ACT_DESCRIPTION[type]}`,
-    inputSchema: withEnvelopeExtras(jsonSchema(PAYLOAD_SCHEMAS[type])),
+    inputSchema: withEnvelopeExtras(jsonSchema(PAYLOAD_SCHEMAS[type]), type === 'ack'),
   })),
 ]
 
@@ -259,10 +259,13 @@ export function callTool(name: string, rawArgs: unknown, caller: Caller): ToolRe
       const type = name.slice(ACT_TOOL_PREFIX.length)
       if (isActType(type)) {
         const from = requireAgent(caller)
-        const { references, actId, ...payload } = args
+        const { references, actId, operationId, ...rest } = args
+        if (type === 'ack' && operationId !== undefined && typeof operationId !== 'string') throw invalid('ACK operationId must be a client-chosen string.')
+        const payload = type === 'ack' ? { ...rest, actId } : rest
+        const envelopeId = type === 'ack' ? operationId : actId
         const res = processAct(
           {
-            ...(typeof actId === 'string' ? { id: actId } : {}),
+            ...(typeof envelopeId === 'string' ? { id: envelopeId } : {}),
             type,
             from,
             references: Array.isArray(references) ? references : [],
