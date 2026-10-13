@@ -248,3 +248,6 @@ Added scripts/test-mcp-identity-offline.cjs for Node24 experimental VM modules. 
 
 Paired Orbit verifier accepts the direct MCP envelope and rejects error envelopes/shared broker substitution; its full suite 793pass/0fail/3existing skips and actual Linux Electron UI27/27 pass. Owner must update/restart NeuralOps preserving G:\neuralops-data and rebuild/install Orbit, then rerun saved-token Verify worker identities. Token rotation/re-registration is not required. Both existing draft branches only; no main merge, deployment, live provider or billing claim. Publication confirmation follows.
 
+
+
+Publication verified: neuralops source commit f059fdfe75ef79ea3ca5814a457a55b64d9d28aa, tree 8a35b7afc0ca5794afa5ae2b3120df7aaf3dcdc9. All 3 intended blobs match local Git SHA1/mode; 209 unrelated blobs preserved. Expected-head fast-forward and independent branch/PR reads confirm the source head; PR#1 remains open/draft/unmerged (NeuralOps PR read briefly lagged ref update, then converged). Paired source: Orbit 4a0246ba288853674be9f8f5f75e66e0b21d16e0; NeuralOps f059fdfe75ef79ea3ca5814a457a55b64d9d28aa. This receipt changes documentation only; owner Windows saved-token acceptance remains pending.
