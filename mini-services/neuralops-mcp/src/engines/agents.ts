@@ -78,7 +78,7 @@ export function addSeconds(iso: string, seconds: number): string {
 }
 
 /** Applies a registration (live or replayed). No validation — callers validate. */
-export function applyRegister(agent: Agent, tokenHash: string, at: string, expiresAt: string | null = null): void {
+function applyRegisterInternal(agent: Agent, tokenHash: string, at: string, expiresAt: string | null = null): void {
   store.agents.set(agent.id, agent)
   store.tokenHashes.set(tokenHash, { agentId: agent.id, expiresAt })
   store.appendLedger({
@@ -98,7 +98,7 @@ export function applyRegister(agent: Agent, tokenHash: string, at: string, expir
   store.journalAppend({ k: 'register', agent: structuredClone(agent), tokenHash, expiresAt, at })
 }
 
-export function registerAgent(
+function registerAgentInternal(
   raw: unknown,
   opts: { asAdmin: boolean; token?: string; now?: string; workspaceId?: string; broker?: string }
 ): { agent: Agent; token: string; expiresAt: string | null } {
@@ -148,4 +148,12 @@ export function registerAgent(
   const expiresAt = input.tokenTtlSeconds ? addSeconds(at, input.tokenTtlSeconds) : null
   applyRegister(agent, sha256(token), at, expiresAt)
   return { agent, token, expiresAt }
+}
+
+export function applyRegister(...args: Parameters<typeof applyRegisterInternal>): ReturnType<typeof applyRegisterInternal> {
+  return store.transaction(() => applyRegisterInternal(...args))
+}
+
+export function registerAgent(...args: Parameters<typeof registerAgentInternal>): ReturnType<typeof registerAgentInternal> {
+  return store.transaction(() => registerAgentInternal(...args))
 }

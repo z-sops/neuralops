@@ -279,3 +279,23 @@ Issues and pull requests are welcome. Please keep `bun test`, `bun run typecheck
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Zee ([z-sops](https://github.com/z-sops)).
+
+## Approval usability hardening (N03)
+
+Non-completion gate checks now require an approved, unconsumed, unexpired approval with uses remaining. Expiry is compared as an instant and is exclusive: at `validUntil` the permission is expired. Invalid expiry timestamps or use counts fail closed. The same `isUsable` predicate governs gate checks and approval selection for actual actions.
+
+A recorded non-completion clearance is a historical receipt and cannot authorize another deploy/publish. Completed-task clearance remains historical evidence for completion/merge checks; consuming the original completion approval does not invalidate a legitimately completed task. Freeze and verified-evidence requirements remain in force.
+
+`gateStatus` is a read-only preflight, not an atomic reservation or consumption operation. Two external actions that only check the gate can still race or repeat before consumption; use the existing actor-bound `perform` workflow to consume governed permissions. This patch does not add external deployment enforcement or artifact verification.
+
+Focused regressions: `cd mini-services/neuralops-mcp && bun test tests/gate-approval.test.ts`. For environments without Bun/dependencies, Node 24+ can run `npm run test:gate:offline`. That runner evaluates the real TypeScript gate, authority and store modules in memory and substitutes only the Bun test API with Node's test API; it does not emit build files, start services, attach journal persistence or install packages. It uses experimental Node VM/type-transformation APIs. Twelve focused checks passed after eight pre-fix failures reproduced the gap. Full Bun suite, semantic typecheck, HTTP/CLI/hook flows and deployment are not verified by this focused run. See project-update.md.
+
+## Journal persistence fail-stop (N04)
+
+Acts, registration, administration and genesis now run inside synchronous mutation boundaries. Ledger and snapshot success notifications are delivered after journal/head writes succeed. On failure, live memory rolls back and the process latches a persistence fault; mutation requests return `persistence_unavailable` (HTTP 503), and gates deny further clearance. The response explicitly states that the last operation may already be on disk. Observer failures after a successful save cannot turn a committed action into an apparent rejection.
+
+The signed journal format stays the same. The live writer advances its MAC/count only after both append and head update succeed, and it cannot retry after an uncertain write. Reset, replay, import, detach and journal load do not clear the process-local fault. Restart against a verified journal to recover; inspect an ambiguous operation in the journal before retrying it. An incomplete/unverifiable journal still requires trusted recovery rather than automatic reseeding.
+
+This does not undo disk effects, guarantee power-loss durability (`fsync` is not added), provide multi-process transactions or automatically recover. Whole-state snapshots add per-mutation memory/CPU overhead; no load benchmark has been run. Internal trusted replay is muted and bypasses live persistence, while the failure latch remains set.
+
+Run `npm run test:persistence:offline` from the MCP package on Node 24+. Thirteen failure-injection checks execute the actual Store, JournalFile, mutation entry points, gates and authority modules with an in-memory filesystem. The harness substitutes Zod validation and demo seeding because Bun/packages are unavailable; it does not verify those components. Append/head write/rename failures, live rollback, blocked retries/clearance, withheld notifications and normal writes passed. The existing 12 gate-approval regressions also pass. Full Bun suite, semantic typecheck, actual HTTP/MCP responses, real filesystem/Windows recovery and load behavior remain unverified.

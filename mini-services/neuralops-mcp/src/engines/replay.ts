@@ -45,7 +45,7 @@ function applyGenesis(seed: SeedKind, seededAt: string): void {
 }
 
 /** Start a fresh history. Broadcasts + persists (unless muted). */
-export function genesis(seed: SeedKind, seededAt = new Date().toISOString()): void {
+function genesisInternal(seed: SeedKind, seededAt = new Date().toISOString()): void {
   applyGenesis(seed, seededAt)
   store.broadcastSnapshot()
 }
@@ -181,9 +181,9 @@ export class JournalFile {
   private headFor(count: number, lastMac: string): Head {
     return { count, lastMac, headMac: this.hmac(`head:${count}:${lastMac}`) }
   }
-  private writeHead(): void {
+  private writeHead(count = this.count, lastMac = this.lastMac): void {
     const tmp = `${this.headPath}.tmp`
-    writeFileSync(tmp, JSON.stringify(this.headFor(this.count, this.lastMac)))
+    writeFileSync(tmp, JSON.stringify(this.headFor(count, lastMac)))
     renameSync(tmp, this.headPath)
   }
   private line(rec: JournalRecord): string {
@@ -257,36 +257,45 @@ export class JournalFile {
   attach(): void {
     this.unsubscribe?.()
     this.unsubscribe = store.onJournal((rec) => {
+      store.assertWritable()
       try {
+        const previous = rec.k === 'genesis' ? ZERO : this.lastMac
+        const count = rec.k === 'genesis' ? 1 : this.count + 1
+        const mac = this.mac(previous, rec)
+        const line = JSON.stringify({ ...rec, mac }) + '\n'
         if (rec.k === 'genesis') {
           this.backup('reseed')
-          this.lastMac = ZERO
-          this.count = 0
           const tmp = `${this.path}.tmp`
-          writeFileSync(tmp, this.line(rec))
+          writeFileSync(tmp, line)
           renameSync(tmp, this.path)
         } else {
-          appendFileSync(this.path, this.line(rec))
+          appendFileSync(this.path, line)
         }
-        this.writeHead()
-      } catch (e) {
-        console.error('[neuralops] journal write failed:', e)
+        this.writeHead(count, mac)
+        this.count = count
+        this.lastMac = mac
+      } catch {
+        store.failPersistence()
       }
     })
   }
 
   /** Rewrite (and sign) the whole file from records — used to migrate legacy journals. */
   rewrite(records: readonly JournalRecord[]): void {
-    this.lastMac = ZERO
-    this.count = 0
-    const tmp = `${this.path}.tmp`
-    writeFileSync(tmp, records.map((r) => this.line(r)).join(''))
-    renameSync(tmp, this.path)
-    this.writeHead()
+    store.assertWritable()
+    try {
+      this.lastMac = ZERO
+      this.count = 0
+      const tmp = `${this.path}.tmp`
+      writeFileSync(tmp, records.map((r) => this.line(r)).join(''))
+      renameSync(tmp, this.path)
+      this.writeHead()
+    } catch { store.failPersistence() }
   }
 
   /** Copy the current journal (+head) into backups/, keeping the newest N. */
   backup(reason: string): string | null {
+    store.assertWritable()
     if (this.keep <= 0 || !existsSync(this.path)) return null
     mkdirSync(this.backupDir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -311,4 +320,8 @@ function safeEq(a: string, b: string): boolean {
   const ba = Buffer.from(a)
   const bb = Buffer.from(b)
   return ba.length === bb.length && timingSafeEqual(ba, bb)
+}
+
+export function genesis(...args: Parameters<typeof genesisInternal>): ReturnType<typeof genesisInternal> {
+  return store.transaction(() => genesisInternal(...args))
 }

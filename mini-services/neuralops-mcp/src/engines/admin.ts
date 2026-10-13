@@ -51,7 +51,7 @@ function audit(rec: AdminRecord, before: Record<string, unknown>, after: Record<
 }
 
 /** Apply a validated admin record (live or replay). */
-export function applyAdmin(rec: AdminRecord): void {
+function applyAdminInternal(rec: AdminRecord): void {
   switch (rec.k) {
     case 'policy_set': {
       store.policies.set(rec.policy.id, structuredClone(rec.policy))
@@ -130,7 +130,7 @@ export function applyAdmin(rec: AdminRecord): void {
 
 const now = () => new Date().toISOString()
 
-export function setPolicy(raw: unknown, by: string, at = now()): Policy {
+function setPolicyInternal(raw: unknown, by: string, at = now()): Policy {
   const p = parse(PolicyInput, raw, 'policy')
   requireAgent(p.approver)
   const dup = [...store.policies.values()].find((x) => x.action === p.action && x.scope === p.scope)
@@ -139,12 +139,12 @@ export function setPolicy(raw: unknown, by: string, at = now()): Policy {
   return policy
 }
 
-export function deletePolicy(id: string, by: string, at = now()): void {
+function deletePolicyInternal(id: string, by: string, at = now()): void {
   if (!store.policies.has(id)) throw notFound(`Policy ${id} not found`)
   applyAdmin({ k: 'policy_delete', id, by, at })
 }
 
-export function setAuthority(agentId: string, raw: unknown, by: string, at = now()): AuthorityScope[] {
+function setAuthorityInternal(agentId: string, raw: unknown, by: string, at = now()): AuthorityScope[] {
   requireAgent(agentId)
   const list = parse(z.object({ authority: AuthorityInput }), raw, 'authority').authority
   const authority: AuthorityScope[] = list.map((a) => ({ ...a, requiresApproval: false, approver: agentId }))
@@ -153,7 +153,7 @@ export function setAuthority(agentId: string, raw: unknown, by: string, at = now
 }
 
 /** Issue a fresh token, invalidating the agent's previous tokens. Re-activates a revoked agent. */
-export function rotateToken(
+function rotateTokenInternal(
   agentId: string,
   raw: unknown,
   by: string,
@@ -168,7 +168,7 @@ export function rotateToken(
   return { token, expiresAt }
 }
 
-export function revokeAgent(agentId: string, by: string, at = now()): void {
+function revokeAgentInternal(agentId: string, by: string, at = now()): void {
   const agent = requireAgent(agentId)
   if (agent.revokedAt) return
   applyAdmin({ k: 'revoke', agentId, by, at })
@@ -177,14 +177,14 @@ export function revokeAgent(agentId: string, by: string, at = now()): void {
 export const FreezeInput = z.object({ reason: z.string().trim().min(1).max(500) })
 
 /** Kill switch: stop every agent at once (incident mode). Admin only. */
-export function freezeWorkspace(raw: unknown, by: string, at = now()) {
+function freezeWorkspaceInternal(raw: unknown, by: string, at = now()) {
   const { reason } = parse(FreezeInput, raw, 'freeze request')
   if (store.freeze) throw conflict(`Workspace is already frozen (by ${store.freeze.by} at ${store.freeze.at}: ${store.freeze.reason})`)
   applyAdmin({ k: 'freeze', frozen: true, reason, by, at })
   return store.freeze!
 }
 
-export function unfreezeWorkspace(raw: unknown, by: string, at = now()) {
+function unfreezeWorkspaceInternal(raw: unknown, by: string, at = now()) {
   const { reason } = parse(z.object({ reason: z.string().trim().min(1).max(500).default('incident resolved') }), raw ?? {}, 'unfreeze request')
   if (!store.freeze) throw conflict('Workspace is not frozen')
   applyAdmin({ k: 'freeze', frozen: false, reason, by, at })
@@ -194,4 +194,36 @@ export function unfreezeWorkspace(raw: unknown, by: string, at = now()) {
 export function assertNotFrozen(): void {
   const f = store.freeze
   if (f) throw forbidden(`Workspace is FROZEN (incident mode) since ${f.at} by ${f.by}: ${f.reason}. No acts are accepted until an admin unfreezes it.`)
+}
+
+export function applyAdmin(...args: Parameters<typeof applyAdminInternal>): ReturnType<typeof applyAdminInternal> {
+  return store.transaction(() => applyAdminInternal(...args))
+}
+
+export function setPolicy(...args: Parameters<typeof setPolicyInternal>): ReturnType<typeof setPolicyInternal> {
+  return store.transaction(() => setPolicyInternal(...args))
+}
+
+export function deletePolicy(...args: Parameters<typeof deletePolicyInternal>): ReturnType<typeof deletePolicyInternal> {
+  return store.transaction(() => deletePolicyInternal(...args))
+}
+
+export function setAuthority(...args: Parameters<typeof setAuthorityInternal>): ReturnType<typeof setAuthorityInternal> {
+  return store.transaction(() => setAuthorityInternal(...args))
+}
+
+export function rotateToken(...args: Parameters<typeof rotateTokenInternal>): ReturnType<typeof rotateTokenInternal> {
+  return store.transaction(() => rotateTokenInternal(...args))
+}
+
+export function revokeAgent(...args: Parameters<typeof revokeAgentInternal>): ReturnType<typeof revokeAgentInternal> {
+  return store.transaction(() => revokeAgentInternal(...args))
+}
+
+export function freezeWorkspace(...args: Parameters<typeof freezeWorkspaceInternal>): ReturnType<typeof freezeWorkspaceInternal> {
+  return store.transaction(() => freezeWorkspaceInternal(...args))
+}
+
+export function unfreezeWorkspace(...args: Parameters<typeof unfreezeWorkspaceInternal>): ReturnType<typeof unfreezeWorkspaceInternal> {
+  return store.transaction(() => unfreezeWorkspaceInternal(...args))
 }
