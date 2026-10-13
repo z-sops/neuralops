@@ -181,7 +181,9 @@ export function createHttpHandler(config: Config, deps: { journal?: JournalFile 
       if (mcpPath) {
         if (mcpPath.token && !config.mcpUrlTokens) throw notFound('Tokens in the MCP URL are disabled (set NEURALOPS_MCP_URL_TOKENS=1); send Authorization: Bearer <token> to /mcp')
         const token = mcpPath.token ?? bearer(req.headers.authorization)
-        const caller = resolveCaller(config, token, token ? null : header(req, 'x-agent-id'))
+        // Authenticated brokers may act only for registered delegated identities.
+        // resolveCaller validates that claim; ordinary/admin tokens cannot bypass it.
+        const caller = resolveCaller(config, token, header(req, 'x-agent-id'))
         enforceAuditScope(caller, method, path)
         const body = method === 'POST' ? await readJson(req) : undefined
         return await handleMcpRequest(req, res, body, caller)
